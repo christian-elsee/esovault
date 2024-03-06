@@ -16,6 +16,11 @@ distclean:
 	rm -rf dist
 clean: distclean
 	: ## $@
+	cd dist
+	helm delete vault -n vault
+	helm delete external-secrets -n external-secrets
+	kubectl delete pvc --all -n vault
+	kubectl delete pv --all -n vault
 
 dist:
 	: ## $@
@@ -23,7 +28,13 @@ dist:
 
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
 	cp -rf helm $@
-	envsubst <helm/vault.yaml | tee $@/helm/vault.yaml
+	<helm/vault.yaml envsubst | tee $@/helm/vault.yaml
+
+	<assets/cluster-keys.json.gpg gpg -d \
+		| tee $@/cluster-keys.json \
+		| jq -re ".unseal_keys_b64[]" \
+		| tee $@/unseal-key.txt >/dev/null \
+	||:
 
 init:
 init:
@@ -52,7 +63,8 @@ install/vault:
 		--namespace vault \
 		--create-namespace \
 		--version $(version) \
-		--values helm/vault.yaml
+		--set='server.ha.enabled=true' \
+  	--set='server.ha.raft.enabled=true'
 
 install/eso: version := 0.9.13
 install/eso: dist
@@ -67,8 +79,29 @@ install/eso: dist
 
 vault/keys: dist
 	: ## $@
-	kubectl exec vault-0 -- vault operator init \
+	cd dist
+	kubectl -n vault exec vault-0 -- vault operator init \
     -key-shares=1 \
     -key-threshold=1 \
     -format=json \
-  | tee dist/cluster-keys.json
+  >cluster-keys.json
+
+vault/unseal: dist
+	: ## $@
+	cd dist
+
+	kubectl -n vault exec vault-0 -- \
+		vault operator unseal "$$(cat unseal-key.txt)"
+
+	kubectl -n vault exec -it vault-1 -- \
+		vault operator raft join http://vault-0.vault-internal:8200
+	kubectl -n vault exec -it vault-1 -- \
+		vault operator unseal "$$(cat unseal-key.txt)"
+
+	kubectl -n vault exec -it vault-2 -- \
+		vault operator raft join http://vault-0.vault-internal:8200
+	kubectl -n vault exec -it vault-2 -- \
+		vault operator unseal "$$(cat unseal-key.txt)"
+
+	kubectl get pods -n vault
+
