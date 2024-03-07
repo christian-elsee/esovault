@@ -2,6 +2,7 @@
 
 .ONESHELL:
 .POSIX:
+.DELETE_ON_ERROR:
 .PHONY: build test run
 
 ## env
@@ -16,13 +17,13 @@ distclean:
 	rm -rf dist
 clean: distclean
 	: ## $@
-	helm delete vault -n vault ||:
-	helm delete external-secrets -n external-secrets ||:
-	kubectl delete pvc --all -n vault ||:
-	kubectl delete pv --all -n vault ||:
-	kubectl delete namespace vault ||:
-	kubectl delete namespace external-secrets ||:
-	rm -rf assets/cluster-keys.json.gpg ||:
+	- helm delete vault -n vault
+	- helm delete external-secrets -n external-secrets
+	- kubectl delete pvc --all -n vault
+	- kubectl delete pv --all -n vault
+	- kubectl delete namespace vault
+	- kubectl delete namespace external-secrets
+	- rm -rf assets/cluster-keys.json.*
 
 dist:
 	: ## $@
@@ -78,6 +79,7 @@ install/vault:
 		--version $(version) \
 		--set='server.ha.enabled=true' \
   	--set='server.ha.raft.enabled=true'
+	kubectl -n vault get all
 
 install/eso: version := 0.9.13
 install/eso: dist
@@ -89,12 +91,16 @@ install/eso: dist
   	--create-namespace \
   	--version $(version) \
 		--set installCRDs=true
+	kubectl -n external-secrets get all
 
-vault/init: assets/cluster-keys.json.gpg vault/unseal dist/root-token.txt
+vault/init: dist
+vault/init: assets/cluster-keys.json.gpg dist/root-token.txt
+vault/init: vault/unseal
 	: ## $@
 	cd dist
 	src/vault.sh vault-0 login "$$(cat root-token.txt)"
-	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
+	- src/vault.sh vault-0 secrets enable -path=secret kv-v2
+	- src/vault.sh vault-0 auth enable kubernetes
 
 assets/cluster-keys.json.gpg:
 	: ## $@
@@ -109,23 +115,21 @@ assets/cluster-keys.json.gpg:
 			--output assets/cluster-keys.json.sign \
 			--detach-sig assets/cluster-keys.json.gpg
 
-	src/vault.sh vault-0 login "$$(cat root-token.txt)"
-	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
-
-
 vault/unseal: dist dist/unseal-key.txt
 	: ## $@
 	cd dist
 
 	src/vault.sh vault-0 operator unseal "$$(cat unseal-key.txt)"
-
 	src/vault.sh vault-1 operator raft join \
 		http://vault-0.vault-internal:8200
 	src/vault.sh vault-1 operator unseal "$$(cat unseal-key.txt)"
-
 	src/vault.sh vault-2 operator raft join \
 		http://vault-0.vault-internal:8200
 	src/vault.sh vault-2 operator unseal "$$(cat unseal-key.txt)"
 
 	kubectl get pods -n vault
 	src/vault.sh vault-0 status
+
+vault/seal:
+	: ## $@
+	src/vault.sh vault-0 operator seal
