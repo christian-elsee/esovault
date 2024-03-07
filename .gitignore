@@ -3,4 +3,5 @@
 !.gitignore
 !Makefile
 !README.md
-
+!src
+!src/vault.sh

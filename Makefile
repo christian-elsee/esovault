@@ -16,25 +16,38 @@ distclean:
 	rm -rf dist
 clean: distclean
 	: ## $@
-	cd dist
-	helm delete vault -n vault
-	helm delete external-secrets -n external-secrets
-	kubectl delete pvc --all -n vault
-	kubectl delete pv --all -n vault
+	helm delete vault -n vault ||:
+	helm delete external-secrets -n external-secrets ||:
+	kubectl delete pvc --all -n vault ||:
+	kubectl delete pv --all -n vault ||:
+	kubectl delete namespace vault ||:
+	kubectl delete namespace external-secrets ||:
+	rm -rf assets/cluster-keys.json.gpg ||:
 
 dist:
 	: ## $@
 	mkdir -p $@ $@/bin
-
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
-	cp -rf helm $@
-	<helm/vault.yaml envsubst | tee $@/helm/vault.yaml
+	cp -rf src $@/
+
+dist/unseal-key.txt: dist
+	: ## $@
+	gpg --verify \
+		assets/cluster-keys.json.sign \
+		assets/cluster-keys.json.gpg
+
+	<assets/cluster-keys.json.gpg gpg -d \
+		| jq -re ".unseal_keys_b64[]" >$@
+
+dist/root-token.txt: dist
+	: ## $@
+	gpg --verify \
+		assets/cluster-keys.json.sign \
+		assets/cluster-keys.json.gpg
 
 	<assets/cluster-keys.json.gpg gpg -d \
 		| tee $@/cluster-keys.json \
-		| jq -re ".unseal_keys_b64[]" \
-		| tee $@/unseal-key.txt >/dev/null \
-	||:
+		| jq -re ".root_token" >$@
 
 init:
 init:
@@ -77,31 +90,42 @@ install/eso: dist
   	--version $(version) \
 		--set installCRDs=true
 
-vault/keys: dist
+vault/init: assets/cluster-keys.json.gpg vault/unseal dist/root-token.txt
 	: ## $@
 	cd dist
-	kubectl -n vault exec vault-0 -- vault operator init \
+	src/vault.sh vault-0 login "$$(cat root-token.txt)"
+	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
+
+assets/cluster-keys.json.gpg:
+	: ## $@
+	src/vault.sh vault-0 operator init \
     -key-shares=1 \
     -key-threshold=1 \
     -format=json \
-  >cluster-keys.json
+  | gpg -aer esovault \
+  | tee assets/cluster-keys.json.gpg
 
-vault/unseal: dist
+	gpg -u $(shell basename $(PWD)) \
+			--output assets/cluster-keys.json.sign \
+			--detach-sig assets/cluster-keys.json.gpg
+
+	src/vault.sh vault-0 login "$$(cat root-token.txt)"
+	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
+
+
+vault/unseal: dist dist/unseal-key.txt
 	: ## $@
 	cd dist
 
-	kubectl -n vault exec vault-0 -- \
-		vault operator unseal "$$(cat unseal-key.txt)"
+	src/vault.sh vault-0 operator unseal "$$(cat unseal-key.txt)"
 
-	kubectl -n vault exec -it vault-1 -- \
-		vault operator raft join http://vault-0.vault-internal:8200
-	kubectl -n vault exec -it vault-1 -- \
-		vault operator unseal "$$(cat unseal-key.txt)"
+	src/vault.sh vault-1 operator raft join \
+		http://vault-0.vault-internal:8200
+	src/vault.sh vault-1 operator unseal "$$(cat unseal-key.txt)"
 
-	kubectl -n vault exec -it vault-2 -- \
-		vault operator raft join http://vault-0.vault-internal:8200
-	kubectl -n vault exec -it vault-2 -- \
-		vault operator unseal "$$(cat unseal-key.txt)"
+	src/vault.sh vault-2 operator raft join \
+		http://vault-0.vault-internal:8200
+	src/vault.sh vault-2 operator unseal "$$(cat unseal-key.txt)"
 
 	kubectl get pods -n vault
-
+	src/vault.sh vault-0 status
