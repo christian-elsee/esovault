@@ -1,13 +1,13 @@
-.DEFAULT_GOAL := @goal
+SHELL := bash
 
-.ONESHELL:
-.POSIX:
-.DELETE_ON_ERROR:
+.DEFAULT_GOAL := @goal
+.SHELLFLAGS := -eu -o pipefail -c
 .PHONY: build test run
+.ONESHELL:
+.DELETE_ON_ERROR:
 
 ## env
 export PATH := ./bin:$(PATH)
-
 
 ## recipe
 @goal: distclean dist init check
@@ -15,21 +15,23 @@ export PATH := ./bin:$(PATH)
 distclean:
 	: ## $@
 	rm -rf dist
+
 clean: distclean
 	: ## $@
-	- helm delete vault -n vault
-	- helm delete eso -n eso
-	- kubectl delete pvc --all -n vault
-	- kubectl delete pv --all -n vault
-	- kubectl delete namespace vault
-	- kubectl delete namespace eso
-	- rm -rf assets/cluster-keys.json.*
+	helm delete vault -n vault ||:
+	helm delete eso -n eso ||:
+	kubectl delete pvc --all -n vault ||:
+	kubectl delete pv --all -n vault ||:
+	kubectl delete namespace vault ||:
+	kubectl delete namespace eso ||:
+	kubectl delete clusterrolebinding role-tokenreview-binding -n default ||:
+	rm -rf assets/cluster-keys.json.*
 
 dist:
 	: ## $@
 	mkdir -p $@ $@/bin
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
-	cp -rf src $@/
+	cp -rf src manifest $@/
 
 dist/unseal-keys.txt: dist
 	: ## $@
@@ -50,6 +52,10 @@ dist/root-token.txt: dist
 		| tee $@/cluster-keys.json \
 		| jq -re ".root_token" >$@
 
+dist/auth-sa-token.txt:
+	: ## $@
+
+
 init:
 init:
 	: ## $@
@@ -67,6 +73,12 @@ check:
 
 install: dist install/vault install/eso
 	: ## $@
+	cd dist
+	kubectl -n eso apply \
+		-f manifest/eso.secret.auth-sa-token.yaml \
+		-f manifest/eso.serviceaccount.auth-sa.yaml
+	kubectl -n default apply \
+		-f manifest/default.clusterrolebinding.role-tokenreview-binding.yaml
 
 install/vault: version := 0.27.0
 install/vault:
@@ -101,8 +113,8 @@ vault/init:
 	: ## $@
 	cd dist
 	src/vault.sh vault-0 login "$$(cat root-token.txt)"
-	- src/vault.sh vault-0 secrets enable -path=secret kv-v2
-	- src/vault.sh vault-0 auth enable kubernetes
+	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
+	src/vault.sh vault-0 auth enable kubernetes ||:
 
 assets/cluster-keys.json.gpg:
 	: ## $@
