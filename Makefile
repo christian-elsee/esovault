@@ -18,11 +18,11 @@ distclean:
 clean: distclean
 	: ## $@
 	- helm delete vault -n vault
-	- helm delete external-secrets -n external-secrets
+	- helm delete eso -n eso
 	- kubectl delete pvc --all -n vault
 	- kubectl delete pv --all -n vault
 	- kubectl delete namespace vault
-	- kubectl delete namespace external-secrets
+	- kubectl delete namespace eso
 	- rm -rf assets/cluster-keys.json.*
 
 dist:
@@ -85,17 +85,19 @@ install/eso: version := 0.9.13
 install/eso: dist
 	: ## $@
 	cd dist
-	helm upgrade external-secrets external-secrets/external-secrets \
+	helm upgrade eso external-secrets/external-secrets \
 		--install \
-  	--namespace external-secrets \
+  	--namespace eso \
   	--create-namespace \
   	--version $(version) \
 		--set installCRDs=true
-	kubectl -n external-secrets get all
+	kubectl -n eso get all
 
-vault/init: dist
-vault/init: assets/cluster-keys.json.gpg dist/root-token.txt
-vault/init: vault/unseal
+vault/init: assets/cluster-keys.json.gpg \
+						dist \
+						dist/root-token.txt \
+						vault/unseal
+vault/init:
 	: ## $@
 	cd dist
 	src/vault.sh vault-0 login "$$(cat root-token.txt)"
