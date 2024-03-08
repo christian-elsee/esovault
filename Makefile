@@ -31,7 +31,7 @@ dist:
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
 	cp -rf src $@/
 
-dist/unseal-key.txt: dist
+dist/unseal-keys.txt: dist
 	: ## $@
 	gpg --verify \
 		assets/cluster-keys.json.sign \
@@ -105,8 +105,8 @@ vault/init: vault/unseal
 assets/cluster-keys.json.gpg:
 	: ## $@
 	src/vault.sh vault-0 operator init \
-    -key-shares=1 \
-    -key-threshold=1 \
+    -key-shares=3 \
+    -key-threshold=3 \
     -format=json \
   | gpg -aer esovault \
   | tee assets/cluster-keys.json.gpg
@@ -115,17 +115,19 @@ assets/cluster-keys.json.gpg:
 			--output assets/cluster-keys.json.sign \
 			--detach-sig assets/cluster-keys.json.gpg
 
-vault/unseal: dist dist/unseal-key.txt
+vault/unseal: dist dist/unseal-keys.txt
 	: ## $@
 	cd dist
 
-	src/vault.sh vault-0 operator unseal "$$(cat unseal-key.txt)"
+	<unseal-keys.txt xargs -n1 -- src/vault.sh vault-0 operator unseal
+
 	src/vault.sh vault-1 operator raft join \
 		http://vault-0.vault-internal:8200
-	src/vault.sh vault-1 operator unseal "$$(cat unseal-key.txt)"
+	<unseal-keys.txt xargs -n1 -- src/vault.sh vault-0 operator unseal
+
 	src/vault.sh vault-2 operator raft join \
 		http://vault-0.vault-internal:8200
-	src/vault.sh vault-2 operator unseal "$$(cat unseal-key.txt)"
+	<unseal-keys.txt xargs -n1 -- src/vault.sh vault-0 operator unseal
 
 	kubectl get pods -n vault
 	src/vault.sh vault-0 status
