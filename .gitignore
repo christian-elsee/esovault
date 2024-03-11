@@ -3,7 +3,12 @@
 !.gitignore
 !Makefile
 !README.md
+!helmfile.lock
+!helmfile.yaml
 !src
-!src/vault.sh
+!src/*.sh
 !manifest/
 !manifest/*.yaml
+!policy
+!policy/*.hcl
+

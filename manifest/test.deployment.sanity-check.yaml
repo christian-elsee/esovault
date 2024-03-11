@@ -1,0 +1,39 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sanity-check
+  namespace: test
+  labels:
+    app.kubernetes.io/name:
+    app.kubernetes.io/instance: "sanity-check.${SHA}"
+    app.kubernetes.io/version: "${SHA}"
+    app.kubernetes.io/component: test
+    app.kubernetes.io/part-of: esovault
+    app.kubernetes.io/managed-by: none
+  annotations:
+    app.kubernetes.io/timestamp: "${TS}"
+spec:
+  progressDeadlineSeconds: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sanity-check
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sanity-check
+      annotations:
+        app.kubernetes.io/timestamp: "${TS}"
+    spec:
+      containers:
+        - name: sanity-check
+          image: alpine:latest
+          command:
+            - sh
+            - -c
+          args:
+            - "sleep inf"
+          envFrom:
+          - secretRef:
+              name: test-secret

@@ -8,9 +8,11 @@ SHELL := bash
 
 ## env
 export PATH := ./bin:$(PATH)
+export KUBECONFIG ?= $(HOME)/.kube/config
+export K8S_HOST := $(shell kubectl config view --minify --output jsonpath="{.clusters[*].cluster.server}")
 
 ## recipe
-@goal: distclean dist init check
+@goal: distclean dist check
 
 distclean:
 	: ## $@
@@ -18,22 +20,27 @@ distclean:
 
 clean: distclean
 	: ## $@
-	helm delete vault -n vault ||:
-	helm delete eso -n eso ||:
+	rm -rf assets/cluster-keys.json.*
+	helmfile destroy ||:
 	kubectl delete pvc --all -n vault ||:
 	kubectl delete pv --all -n vault ||:
 	kubectl delete namespace vault ||:
 	kubectl delete namespace eso ||:
 	kubectl delete clusterrolebinding role-tokenreview-binding -n default ||:
-	rm -rf assets/cluster-keys.json.*
 
 dist:
 	: ## $@
 	mkdir -p $@ $@/bin
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
-	cp -rf src manifest $@/
+	cp -rf src policy $@/
+	cat manifest/*.yaml \
+		| envsubst \
+		| tee $@/manifest.yaml
 
-dist/unseal-keys.txt: dist
+	yq -re <$(KUBECONFIG) \
+		'.clusters[0].cluster."certificate-authority-data"' \
+	| base64 -d >$@/ca.crt
+dist/unseal-keys.txt: dist assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify \
 		assets/cluster-keys.json.sign \
@@ -41,80 +48,50 @@ dist/unseal-keys.txt: dist
 
 	<assets/cluster-keys.json.gpg gpg -d \
 		| jq -re ".unseal_keys_b64[]" >$@
-
-dist/root-token.txt: dist
+dist/root-token.txt: dist assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify \
 		assets/cluster-keys.json.sign \
 		assets/cluster-keys.json.gpg
 
 	<assets/cluster-keys.json.gpg gpg -d \
-		| tee $@/cluster-keys.json \
 		| jq -re ".root_token" >$@
-
-dist/auth-sa-token.txt:
+dist/auth-sa-token.txt: dist
 	: ## $@
-
-
-init:
-init:
-	: ## $@
-	cd dist
-
-	helm repo update
-	helm  search repo hashicorp/vault
-	helm repo add hashicorp https://helm.releases.hashicorp.com
-
-	helm search repo external-secrets/external-secrets
-	helm repo add external-secrets https://charts.external-secrets.io
+	kubectl -n eso get secret auth-sa-token -ojson \
+		| jq -re ".data.token" \
+		| base64 -d >$@
 
 check:
 	: ## $@
+	helmfile deps
 
-install: dist install/vault install/eso
+install: helmfile.lock dist/manifest.yaml
 	: ## $@
-	cd dist
-	kubectl -n eso apply \
-		-f manifest/eso.secret.auth-sa-token.yaml \
-		-f manifest/eso.serviceaccount.auth-sa.yaml
-	kubectl -n default apply \
-		-f manifest/default.clusterrolebinding.role-tokenreview-binding.yaml
-
-install/vault: version := 0.27.0
-install/vault:
-	: ## $@
-	cd dist
-	helm upgrade vault hashicorp/vault \
-		--install \
-		--namespace vault \
-		--create-namespace \
-		--version $(version) \
-		--set='server.ha.enabled=true' \
-  	--set='server.ha.raft.enabled=true'
-	kubectl -n vault get all
-
-install/eso: version := 0.9.13
-install/eso: dist
-	: ## $@
-	cd dist
-	helm upgrade eso external-secrets/external-secrets \
-		--install \
-  	--namespace eso \
-  	--create-namespace \
-  	--version $(version) \
-		--set installCRDs=true
-	kubectl -n eso get all
+	helmfile apply
+	kubectl apply -f dist/manifest.yaml
 
 vault/init: assets/cluster-keys.json.gpg \
-						dist \
 						dist/root-token.txt \
+						dist/ca.crt \
+						dist/auth-sa-token.txt \
 						vault/unseal
 vault/init:
 	: ## $@
 	cd dist
 	src/vault.sh vault-0 login "$$(cat root-token.txt)"
 	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
-	src/vault.sh vault-0 auth enable kubernetes ||:
+	src/vault.sh vault-0 auth enable -path=kubernetes/internal kubernetes ||:
+	src/vault.sh vault-0 write auth/kubernetes/internal/config \
+		token_reviewer_jwt="$$(cat auth-sa-token.txt)" \
+		kubernetes_host="$(K8S_HOST)" \
+		kubernetes_ca_cert="$$(cat ca.crt)"
+	src/vault.sh vault-0 write kubernetes/internal/role/eso-creds-reader \
+		bound_service_account_names="auth-sa" \
+		bound_service_account_namespaces="eso" \
+		policies="read_only" \
+		ttl="15m"
+	src/vault.sh vault-0 policy write read_only -<vault/read_only.hcl
 
 assets/cluster-keys.json.gpg:
 	: ## $@
