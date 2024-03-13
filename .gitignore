@@ -1,14 +1,14 @@
 *
 
 !.gitignore
+!.helmignore
 !Makefile
 !README.md
-!helmfile.lock
-!helmfile.yaml
+!Chart.lock
+!Chart.yaml
 !src
 !src/*.sh
-!manifest/
-!manifest/*.yaml
+!resources/
+!resources/**
 !policy
 !policy/*.hcl
-

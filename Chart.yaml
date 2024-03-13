@@ -1,0 +1,12 @@
+apiVersion: v2
+type: application
+name: esovault
+version: 0.1.0 # unused
+appVersion: 0.1.0 # unused
+dependencies:
+  - name: vault
+    repository: https://helm.releases.hashicorp.com
+    version: 0.27.0
+  - name: external-secrets
+    repository: https://charts.external-secrets.io
+    version: 0.9.13

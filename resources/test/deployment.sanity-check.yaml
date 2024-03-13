@@ -5,14 +5,14 @@ metadata:
   name: sanity-check
   namespace: test
   labels:
-    app.kubernetes.io/name:
-    app.kubernetes.io/instance: "sanity-check.${SHA}"
-    app.kubernetes.io/version: "${SHA}"
+    app.kubernetes.io/name: sanity-check
+    app.kubernetes.io/instance: "sanity-check.{{ .Values.sha }}"
+    app.kubernetes.io/version: "{{ .Values.sha }}"
     app.kubernetes.io/component: test
     app.kubernetes.io/part-of: esovault
-    app.kubernetes.io/managed-by: none
   annotations:
-    app.kubernetes.io/timestamp: "${TS}"
+    app.kubernetes.io/timestamp: {{ now | quote }}
+
 spec:
   progressDeadlineSeconds: 10
   selector:
@@ -24,7 +24,7 @@ spec:
       labels:
         app.kubernetes.io/name: sanity-check
       annotations:
-        app.kubernetes.io/timestamp: "${TS}"
+        app.kubernetes.io/timestamp: "{{ now | quote }}"
     spec:
       containers:
         - name: sanity-check

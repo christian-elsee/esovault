@@ -1,5 +1,3 @@
-SHELL := bash
-
 .DEFAULT_GOAL := @goal
 .SHELLFLAGS := -eu -o pipefail -c
 .PHONY: build test run
@@ -9,19 +7,19 @@ SHELL := bash
 ## env
 export PATH := ./bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
-export K8S_HOST := $(shell kubectl config view --minify --output jsonpath="{.clusters[*].cluster.server}")
 
 ## recipe
-@goal: distclean dist check
+@goal: distclean dist build
 
 distclean:
 	: ## $@
 	rm -rf dist
-
 clean: distclean
 	: ## $@
 	rm -rf assets/cluster-keys.json.*
-	helmfile destroy ||:
+	helm uninstall eso -n eso ||:
+	helm uninstall vault -n vault ||:
+	helm uninstall esovault -n esovault ||:
 	kubectl delete pvc --all -n vault ||:
 	kubectl delete pv --all -n vault ||:
 	kubectl delete namespace vault ||:
@@ -30,16 +28,29 @@ clean: distclean
 
 dist:
 	: ## $@
-	mkdir -p $@ $@/bin
+	mkdir -p $@ \
+					 $@/bin \
+					 $@/charts \
+					 $@/templates \
+					 $@/crd
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
-	cp -rf src policy $@/
-	cat manifest/*.yaml \
-		| envsubst \
-		| tee $@/manifest.yaml
-
+	cp -rf \
+		.helmignore \
+		Chart.lock \
+		Chart.yaml \
+		src \
+		policy \
+	-- $@/
+dist/ca.crt: dist
+	: ## $@
 	yq -re <$(KUBECONFIG) \
 		'.clusters[0].cluster."certificate-authority-data"' \
-	| base64 -d >$@/ca.crt
+	| base64 -d >$@
+dist/k8s-host.txt: dist
+	: ## $@
+	yq -re <$(KUBECONFIG) \
+		'.clusters[0].cluster.server' \
+	| base64 -d >$@
 dist/unseal-keys.txt: dist assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify \
@@ -62,18 +73,48 @@ dist/auth-sa-token.txt: dist
 		| jq -re ".data.token" \
 		| base64 -d >$@
 
+build:
+	: ## $@
+	kubectl kustomize resources/eso \
+		| tee dist/templates/eso.yaml
+	kubectl kustomize resources/default \
+		| tee dist/templates/default.yaml
+	kubectl kustomize resources/crd \
+		| tee dist/crd/crd.yaml
+
+	helm dependency build dist
+	find dist/charts dist/templates \
+		-type f \
+    -exec md5sum {} + \
+	| sort -k 2 \
+	| md5sum \
+	| cut -f1 -d" " \
+	| tee dist/checksum.txt
+
 check:
 	: ## $@
-	helmfile deps
+	helm lint
 
-install: helmfile.lock dist/manifest.yaml
+install: install/chart \
+				 vault/init
 	: ## $@
-	helmfile apply
-	kubectl apply -f dist/manifest.yaml
+	helm list --failed --short --all-namespaces \
+		| { ! grep -q ^ ; }
+	helm status eso -n eso
+	helm status vault -n vault
+	helm status esovault --all-namespaces
 
-vault/init: assets/cluster-keys.json.gpg \
-						dist/root-token.txt \
+
+install/chart: dist/checksum.txt
+	: ## $@
+	helm upgrade esovault dist \
+		--install \
+		--namespace esovault \
+		--set sha=$(shell cat dist/checksum.txt)
+
+vault/init: dist/root-token.txt \
 						dist/ca.crt \
+						dist/k8s-host.txt \
 						dist/auth-sa-token.txt \
 						vault/unseal
 vault/init:
@@ -84,7 +125,7 @@ vault/init:
 	src/vault.sh vault-0 auth enable -path=kubernetes/internal kubernetes ||:
 	src/vault.sh vault-0 write auth/kubernetes/internal/config \
 		token_reviewer_jwt="$$(cat auth-sa-token.txt)" \
-		kubernetes_host="$(K8S_HOST)" \
+		kubernetes_host="$$(cat k8s-host.txt)" \
 		kubernetes_ca_cert="$$(cat ca.crt)"
 	src/vault.sh vault-0 write kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \

@@ -1,10 +1,9 @@
-version: v0.162.0
 dependencies:
-- name: external-secrets
-  repository: https://charts.external-secrets.io
-  version: 0.9.13
 - name: vault
   repository: https://helm.releases.hashicorp.com
   version: 0.27.0
+- name: external-secrets
+  repository: https://charts.external-secrets.io
+  version: 0.9.13
 digest: sha256:356348fd60b6554dfb5c91aea877b9bb0d4d07b18625a98cb287739e669d2622
-generated: "2024-03-11T15:18:20.904352+01:00"
+generated: "2024-03-13T13:01:42.685435+01:00"
