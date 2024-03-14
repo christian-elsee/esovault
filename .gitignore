@@ -6,6 +6,7 @@
 !README.md
 !Chart.lock
 !Chart.yaml
+!values.yaml
 !src
 !src/*.sh
 !resources/

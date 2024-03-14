@@ -44,7 +44,7 @@ dist:
 					 $@/chart/templates
 
 	cp -rf src policy -- $@/
-	cp Chart.* -- $@/chart
+	cp Chart.* values.yaml -- $@/chart
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* \
 		 $@/bin/helm
 
@@ -87,10 +87,7 @@ dist/build.checksum: dist
 		| tee dist/chart/templates/resources.yaml
 
 	helm dependency build dist/chart
-	find dist/chart/charts \
-			 dist/chart/templates \
-			 dist/chart/crds \
-			 dist/chart/Chart.lock \
+	find dist/chart \
 		-type f \
     -exec md5sum {} + \
 	| sort -k 2 \
@@ -110,14 +107,13 @@ check: dist/chart
 	helm lint dist/chart --with-subcharts
 
 
-chart/lockfile: distclean dist dist/Chart.lock
-
-	echo here
-
-install: install/chart
+install: install/chart \
+		     vault/init
 	: ## $@
-	helm list -n $(NAME) --failed --short \
-		| { ! grep -q ^ ; }
+	echo kubectl apply \
+		-f dist/chart/crds/resources.yaml \
+		-n $(NAME) \
+		--timeout "60s"
 
 install/chart: dist/build.checksum
 	: ## $@
@@ -129,10 +125,6 @@ install/chart: dist/build.checksum
 		--create-namespace \
 		--namespace "$(NAME)" \
 		--set sha="$(shell cat dist/build.checksum)"
-	kubectl apply \
-		-f dist/chart/crds/resources.yaml \
-		-n $(NAME) \
-		--timeout 60
 
 vault/init: dist \
 	          dist/root-token.txt \
@@ -141,6 +133,7 @@ vault/init: dist \
 						dist/auth-sa-token.txt \
 						vault/unseal
 	: ## $@
+	false
 	cd dist
 	src/vault.sh vault-0 login "$$(cat root-token.txt)"
 	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:

@@ -1,0 +1,8 @@
+name: esovault
+
+vault:
+  server:
+    ha:
+      enabled: true
+      raft:
+        enabled: true
