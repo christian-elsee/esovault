@@ -5,12 +5,15 @@ set -euo pipefail
 2>/dev/null >&3 || exec 3>/dev/null
 
 ## env
+: ${NAMESPACE:=esovault}
+
 pod=${1?pod} ;shift
 : ${@?argv}
 
 ## main
 logger -sp DEBUG -- "Enter" \
   :: "pod=$pod" \
+  :: "namespace=$NAMESPACE" \
   :: "$( echo $@ | base64 | tr -d \\n )" 2>&3
 
-kubectl -n vault exec -i "$pod" -- vault "$@"
+kubectl -n $NAMESPACE exec -i "$pod" -- vault "$@"

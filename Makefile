@@ -5,11 +5,16 @@
 .DELETE_ON_ERROR:
 
 ## env
+export NAME := $(shell basename $(PWD))
 export PATH := ./bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
 
 ## recipe
-@goal: distclean dist build
+@goal: distclean dist build check
+@chart/lockfile: distclean dist
+	: ## $@
+	rm -rf dist/chart/Chart.lock
+	helm dependency update dist/chart
 
 distclean:
 	: ## $@
@@ -17,30 +22,32 @@ distclean:
 clean: distclean
 	: ## $@
 	rm -rf assets/cluster-keys.json.*
-	helm uninstall eso -n eso ||:
-	helm uninstall vault -n vault ||:
-	helm uninstall esovault -n esovault ||:
-	kubectl delete pvc --all -n vault ||:
-	kubectl delete pv --all -n vault ||:
-	kubectl delete namespace vault ||:
-	kubectl delete namespace eso ||:
-	kubectl delete clusterrolebinding role-tokenreview-binding -n default ||:
+	# delete helm charts in esovault
+	helm uninstall $(NAME) \
+		--cascade foreground \
+		--wait \
+		-n $(NAME) \
+	||:
+
+	# remove persistent volumes
+	kubectl delete pvc --all -n $(NAME)  ||:
+	kubectl delete pv --all -n $(NAME) ||:
+	kubectl delete namespace $(NAME) ||:
+	kubectl delete clustersecretstore vault ||:
 
 dist:
 	: ## $@
 	mkdir -p $@ \
 					 $@/bin \
-					 $@/charts \
-					 $@/templates \
-					 $@/crd
-	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* $@/bin/helm
-	cp -rf \
-		.helmignore \
-		Chart.lock \
-		Chart.yaml \
-		src \
-		policy \
-	-- $@/
+					 $@/chart \
+					 $@/chart/crds \
+					 $@/chart/templates
+
+	cp -rf src policy -- $@/
+	cp Chart.* -- $@/chart
+	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* \
+		 $@/bin/helm
+
 dist/ca.crt: dist
 	: ## $@
 	yq -re <$(KUBECONFIG) \
@@ -72,52 +79,67 @@ dist/auth-sa-token.txt: dist
 	kubectl -n eso get secret auth-sa-token -ojson \
 		| jq -re ".data.token" \
 		| base64 -d >$@
-
-build:
+dist/build.checksum: dist
 	: ## $@
-	kubectl kustomize resources/eso \
-		| tee dist/templates/eso.yaml
-	kubectl kustomize resources/default \
-		| tee dist/templates/default.yaml
-	kubectl kustomize resources/crd \
-		| tee dist/crd/crd.yaml
+	kubectl kustomize resources/crds \
+		| tee dist/chart/crds/resources.yaml
+	kubectl kustomize resources/templates \
+		| tee dist/chart/templates/resources.yaml
 
-	helm dependency build dist
-	find dist/charts dist/templates \
+	helm dependency build dist/chart
+	find dist/chart/charts \
+			 dist/chart/templates \
+			 dist/chart/crds \
+			 dist/chart/Chart.lock \
 		-type f \
     -exec md5sum {} + \
 	| sort -k 2 \
 	| md5sum \
 	| cut -f1 -d" " \
-	| tee dist/checksum.txt
-
-check:
+	| tee dist/build.checksum
+dist/chart/Chart.lock:
 	: ## $@
-	helm lint
+	helm dependency update dist/chart
 
-install: install/chart \
-				 vault/init
+build: dist/build.checksum
 	: ## $@
-	helm list --failed --short --all-namespaces \
+	cat dist/build.checksum
+
+check: dist/chart
+	: ## $@
+	helm lint dist/chart --with-subcharts
+
+
+chart/lockfile: distclean dist dist/Chart.lock
+
+	echo here
+
+install: install/chart
+	: ## $@
+	helm list -n $(NAME) --failed --short \
 		| { ! grep -q ^ ; }
-	helm status eso -n eso
-	helm status vault -n vault
-	helm status esovault --all-namespaces
 
-
-install/chart: dist/checksum.txt
+install/chart: dist/build.checksum
 	: ## $@
-	helm upgrade esovault dist \
+	helm upgrade $(NAME) dist/chart \
 		--install \
-		--namespace esovault \
-		--set sha=$(shell cat dist/checksum.txt)
+		--skip-crds \
+		--dependency-update \
+		--render-subchart-notes \
+		--create-namespace \
+		--namespace "$(NAME)" \
+		--set sha="$(shell cat dist/build.checksum)"
+	kubectl apply \
+		-f dist/chart/crds/resources.yaml \
+		-n $(NAME) \
+		--timeout 60
 
-vault/init: dist/root-token.txt \
+vault/init: dist \
+	          dist/root-token.txt \
 						dist/ca.crt \
 						dist/k8s-host.txt \
 						dist/auth-sa-token.txt \
 						vault/unseal
-vault/init:
 	: ## $@
 	cd dist
 	src/vault.sh vault-0 login "$$(cat root-token.txt)"
@@ -132,7 +154,7 @@ vault/init:
 		bound_service_account_namespaces="eso" \
 		policies="read_only" \
 		ttl="15m"
-	src/vault.sh vault-0 policy write read_only -<vault/read_only.hcl
+	src/vault.sh vault-0 policy write read_only -<policy/read_only.hcl
 
 assets/cluster-keys.json.gpg:
 	: ## $@
@@ -140,7 +162,7 @@ assets/cluster-keys.json.gpg:
     -key-shares=3 \
     -key-threshold=3 \
     -format=json \
-  | gpg -aer esovault \
+  | gpg -aer $(NAME) \
   | tee assets/cluster-keys.json.gpg
 
 	gpg -u $(shell basename $(PWD)) \
