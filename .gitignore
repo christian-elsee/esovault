@@ -12,3 +12,5 @@
 !resources/**
 !policy
 !policy/*.hcl
+!t
+!t/**
