@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := @goal
-.SHELLFLAGS := -eu -o pipefail -c
+.SHELLFLAGS := -euo pipefail $(if $(TRACE),-x,) -c
 .PHONY: build test run
 .ONESHELL:
 .DELETE_ON_ERROR:
@@ -57,8 +57,8 @@ dist/k8s-host.txt: dist
 	: ## $@
 	yq -re <$(KUBECONFIG) \
 		'.clusters[0].cluster.server' \
-	| base64 -d >$@
-dist/unseal-keys.txt: dist assets/cluster-keys.json.gpg
+	| tee $@
+dist/unseal-keys.txt: assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify \
 		assets/cluster-keys.json.sign \
@@ -66,7 +66,7 @@ dist/unseal-keys.txt: dist assets/cluster-keys.json.gpg
 
 	<assets/cluster-keys.json.gpg gpg -d \
 		| jq -re ".unseal_keys_b64[]" >$@
-dist/root-token.txt: dist assets/cluster-keys.json.gpg
+dist/root-token.txt: assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify \
 		assets/cluster-keys.json.sign \
@@ -74,12 +74,12 @@ dist/root-token.txt: dist assets/cluster-keys.json.gpg
 
 	<assets/cluster-keys.json.gpg gpg -d \
 		| jq -re ".root_token" >$@
-dist/auth-sa-token.txt: dist
+dist/auth-sa-token.txt:
 	: ## $@
-	kubectl -n eso get secret auth-sa-token -ojson \
+	kubectl -n $(NAME) get secret auth-sa-token -ojson \
 		| jq -re ".data.token" \
 		| base64 -d >$@
-dist/build.checksum: dist
+dist/build.checksum:
 	: ## $@
 	kubectl kustomize resources/crds \
 		| tee dist/chart/crds/resources.yaml
@@ -106,14 +106,12 @@ check: dist/chart
 	: ## $@
 	helm lint dist/chart --with-subcharts
 
-
 install: install/chart \
-		     vault/init
+				 vault/init
 	: ## $@
-	echo kubectl apply \
+	kubectl apply \
 		-f dist/chart/crds/resources.yaml \
-		-n $(NAME) \
-		--timeout "60s"
+		-n "$(NAME)"
 
 install/chart: dist/build.checksum
 	: ## $@
@@ -126,32 +124,29 @@ install/chart: dist/build.checksum
 		--namespace "$(NAME)" \
 		--set sha="$(shell cat dist/build.checksum)"
 
-vault/init: dist \
-	          dist/root-token.txt \
+vault/init: dist/root-token.txt \
 						dist/ca.crt \
 						dist/k8s-host.txt \
 						dist/auth-sa-token.txt \
 						vault/unseal
 	: ## $@
-	false
-	cd dist
-	src/vault.sh vault-0 login "$$(cat root-token.txt)"
-	src/vault.sh vault-0 secrets enable -path=secret kv-v2 ||:
-	src/vault.sh vault-0 auth enable -path=kubernetes/internal kubernetes ||:
-	src/vault.sh vault-0 write auth/kubernetes/internal/config \
-		token_reviewer_jwt="$$(cat auth-sa-token.txt)" \
-		kubernetes_host="$$(cat k8s-host.txt)" \
-		kubernetes_ca_cert="$$(cat ca.crt)"
-	src/vault.sh vault-0 write kubernetes/internal/role/eso-creds-reader \
+	src/vault.sh $(NAME)-0 login "$$(cat dist/root-token.txt)"
+	src/vault.sh $(NAME)-0 secrets enable -path=secret kv-v2 ||:
+	src/vault.sh $(NAME)-0 policy write read_only -<dist/policy/read_only.json
+	src/vault.sh $(NAME)-0 auth enable -path=kubernetes/internal kubernetes ||:
+	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/config \
+		token_reviewer_jwt="$$(cat dist/auth-sa-token.txt)" \
+		kubernetes_host="$$(cat dist/k8s-host.txt)" \
+		kubernetes_ca_cert="$$(cat dist/ca.crt)"
+	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \
 		bound_service_account_namespaces="eso" \
 		policies="read_only" \
 		ttl="15m"
-	src/vault.sh vault-0 policy write read_only -<policy/read_only.hcl
 
 assets/cluster-keys.json.gpg:
 	: ## $@
-	src/vault.sh vault-0 operator init \
+	src/vault.sh $(NAME)-0 operator init \
     -key-shares=3 \
     -key-threshold=3 \
     -format=json \
@@ -164,21 +159,21 @@ assets/cluster-keys.json.gpg:
 
 vault/unseal: dist dist/unseal-keys.txt
 	: ## $@
-	cd dist
+	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-0 operator unseal
 
-	<unseal-keys.txt xargs -n1 -- src/vault.sh vault-0 operator unseal
+	src/vault.sh $(NAME)-1 operator raft join \
+		http://$(NAME)-0.$(NAME)-internal:8200
+	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-1 operator unseal
 
-	src/vault.sh vault-1 operator raft join \
-		http://vault-0.vault-internal:8200
-	<unseal-keys.txt xargs -n1 -- src/vault.sh vault-0 operator unseal
+	src/vault.sh $(NAME)-2 operator raft join \
+		http://$(NAME)-0.$(NAME)-internal:8200
+	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-2 operator unseal
 
-	src/vault.sh vault-2 operator raft join \
-		http://vault-0.vault-internal:8200
-	<unseal-keys.txt xargs -n1 -- src/vault.sh vault-0 operator unseal
-
-	kubectl get pods -n vault
-	src/vault.sh vault-0 status
+	src/vault.sh $(NAME)-0 status
+	src/vault.sh $(NAME)-1 status
+	src/vault.sh $(NAME)-2 status
+	kubectl get pods -n $(NAME)
 
 vault/seal:
 	: ## $@
-	src/vault.sh vault-0 operator seal
+	src/vault.sh $(NAME)-0 operator seal
