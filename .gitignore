@@ -1,7 +1,6 @@
 *
 
 !.gitignore
-!.helmignore
 !Makefile
 !README.md
 !Chart.lock
