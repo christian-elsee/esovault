@@ -1,21 +1,32 @@
-.DEFAULT_GOAL := @goal
+SHELL = /bin/bash
+.DEFAULT_GOAL := all
 .SHELLFLAGS := -euo pipefail $(if $(TRACE),-x,) -c
-.PHONY: build test run
 .ONESHELL:
 .DELETE_ON_ERROR:
+.PHONY: all \
+				build \
+				check \
+				install \
+				test \
+				assets/keys \
+				chart/* \
+				vault/* \
+				install/*
 
 ## env
 export NAME := $(shell basename $(PWD))
 export PATH := ./bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
 
-## recipe
-@goal: distclean dist build check
-@chart/lockfile: distclean dist
-	: ## $@
-	rm -rf dist/chart/Chart.lock
-	helm dependency update dist/chart
+## workflows
+all: distclean dist build check
+install: install/chart vault/init install/crds assets/keys
+test: dist build
+chart/lockfile: distclean dist
+vault/unseal: assets/keys
+vault/seal:
 
+## recipes
 distclean:
 	: ## $@
 	rm -rf dist
@@ -35,6 +46,7 @@ clean: distclean
 	kubectl delete namespace $(NAME) ||:
 	kubectl delete clustersecretstore vault ||:
 
+## dist
 dist:
 	: ## $@
 	mkdir -p $@ \
@@ -47,7 +59,6 @@ dist:
 	cp Chart.* values.yaml -- $@/chart
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* \
 		 $@/bin/helm
-
 dist/ca.crt:
 	: ## $@
 	yq -re <$(KUBECONFIG) \
@@ -95,7 +106,6 @@ dist/assets/cluster-keys.json.gpg:
     -format=json \
   | gpg -aer $(NAME) \
   | tee $@
-
 	gpg -u $(shell basename $(PWD)) \
 			--output $@.sign \
 			--detach-sig $@
@@ -108,15 +118,16 @@ check: dist/chart
 	: ## $@
 	helm lint dist/chart --with-subcharts
 
-install: install/chart \
-				 vault/init \
-				 install/crds \
-				 assets/cluster-keys
+## chart ########################################
+chart/lockfile:
 	: ## $@
+	rm -rf dist/chart/Chart.lock
+	helm dependency update dist/chart
 
-assets/cluster-keys: dist/build.checksum \
-						 				 dist/assets/cluster-keys.json.gpg \
-						 				 dist/assets/cluster-keys.json.gpg.sign
+## assets #######################################
+assets/keys: dist/build.checksum \
+						 dist/assets/cluster-keys.json.gpg \
+						 dist/assets/cluster-keys.json.gpg.sign
 	: ## $@
 	cp -f dist/assets/cluster-keys.json.gpg assets
 	cp -f dist/assets/cluster-keys.json.gpg.sign assets
@@ -127,6 +138,7 @@ assets/cluster-keys: dist/build.checksum \
 				 cluster-keys.json.gpg.sign
 	tar -tvf assets/cluster-keys.tar.$(shell cat dist/build.checksum)
 
+## install ######################################
 install/crds: dist/chart/crds/resources.yaml
 	: ## $@
 	kubectl apply \
@@ -144,6 +156,7 @@ install/chart: dist/build.checksum
 		--namespace "$(NAME)" \
 		--set sha="$(shell cat dist/build.checksum)"
 
+## vault ########################################
 vault/init: dist/root-token.txt \
 						dist/ca.crt \
 						dist/k8s-host.txt \
@@ -160,11 +173,11 @@ vault/init: dist/root-token.txt \
 		kubernetes_ca_cert="$$(cat dist/ca.crt)"
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \
-		bound_service_account_namespaces="eso" \
+		bound_service_account_namespaces="$(NAME)" \
 		policies="read_only" \
 		ttl="15m"
 
-vault/unseal: dist dist/unseal-keys.txt
+vault/unseal: dist/unseal-keys.txt
 	: ## $@
 	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-0 operator unseal
 
@@ -184,3 +197,9 @@ vault/unseal: dist dist/unseal-keys.txt
 vault/seal:
 	: ## $@
 	src/vault.sh $(NAME)-0 operator seal
+
+## test #########################################
+test:
+	: ## $@
+	rsync -avh --delete t/ dist/t/
+	cd dist && prove -vr
