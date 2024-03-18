@@ -13,12 +13,12 @@ SHELL = /bin/bash
 				vault/* \
 				install/*
 
-## env
+## env ##########################################
 export NAME := $(shell basename $(PWD))
 export PATH := ./bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
 
-## workflows
+## interface ####################################
 all: distclean dist build check
 install: install/chart vault/init install/crds assets/keys
 test: dist build
@@ -26,7 +26,7 @@ chart/lockfile: distclean dist
 vault/unseal: assets/keys
 vault/seal:
 
-## recipes
+## clean ########################################
 distclean:
 	: ## $@
 	rm -rf dist
@@ -46,14 +46,15 @@ clean: distclean
 	kubectl delete namespace $(NAME) ||:
 	kubectl delete clustersecretstore vault ||:
 
-## dist
+## dist #########################################
 dist:
 	: ## $@
 	mkdir -p $@ \
 					 $@/bin \
 					 $@/chart \
 					 $@/chart/crds \
-					 $@/chart/templates
+					 $@/chart/templates \
+					 $@/chart/templates/tests
 
 	cp -rf assets src policy -- $@/
 	cp Chart.* values.yaml -- $@/chart
@@ -89,6 +90,8 @@ dist/build.checksum:
 		| tee dist/chart/crds/resources.yaml
 	kubectl kustomize resources/templates \
 		| tee dist/chart/templates/resources.yaml
+	kubectl kustomize resources/tests \
+		| tee dist/chart/templates/tests/resources.yaml
 
 	helm dependency build dist/chart
 	find dist/chart \
@@ -202,4 +205,7 @@ vault/seal:
 test:
 	: ## $@
 	rsync -avh --delete t/ dist/t/
-	cd dist && prove -vr
+	kubectl kustomize resources/tests \
+		| tee dist/chart/templates/tests/resources.yaml
+
+	# cd dist && prove -vr
