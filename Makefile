@@ -21,10 +21,11 @@ export KUBECONFIG ?= $(HOME)/.kube/config
 ## interface ####################################
 all: distclean dist build check
 install: install/chart vault/init install/crds assets/keys
-test: dist build
 chart/lockfile: distclean dist
 vault/unseal: assets/keys
 vault/seal:
+test: distclean dist build
+status:
 
 ## clean ########################################
 distclean:
@@ -32,6 +33,7 @@ distclean:
 	rm -rf dist
 clean: distclean
 	: ## $@
+	set -x
 	rm -rf assets/cluster-keys.json.gpg \
 				 assets/cluster-keys.json.gpg.sign
 	helm uninstall $(NAME) \
@@ -51,6 +53,7 @@ dist:
 	: ## $@
 	mkdir -p $@ \
 					 $@/bin \
+					 $@/log \
 					 $@/chart \
 					 $@/chart/crds \
 					 $@/chart/templates \
@@ -164,21 +167,26 @@ vault/init: dist/root-token.txt \
 						dist/ca.crt \
 						dist/k8s-host.txt \
 						dist/auth-sa-token.txt \
+						dist/build.checksum \
 						vault/unseal
 	: ## $@
-	src/vault.sh $(NAME)-0 login "$$(cat dist/root-token.txt)"
-	src/vault.sh $(NAME)-0 secrets enable -path=secrets kv-v2 ||:
+	src/vault.sh $(NAME)-0 login "$(shell cat dist/root-token.txt)"
+	src/vault.sh $(NAME)-0 secrets enable -path=secret -version=1 kv ||:
 	src/vault.sh $(NAME)-0 policy write read_only -<dist/policy/read_only.json
 	src/vault.sh $(NAME)-0 auth enable -path=kubernetes/internal kubernetes ||:
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/config \
-		token_reviewer_jwt="$$(cat dist/auth-sa-token.txt)" \
-		kubernetes_host="$$(cat dist/k8s-host.txt)" \
-		kubernetes_ca_cert="$$(cat dist/ca.crt)"
+		token_reviewer_jwt="$(shell cat dist/auth-sa-token.txt)" \
+		kubernetes_host="$(shell cat dist/k8s-host.txt)" \
+		kubernetes_ca_cert="$$(cat dist/ca.crt)" # this has to process subs to account for newlines
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \
 		bound_service_account_namespaces="$(NAME)" \
 		policies="read_only" \
 		ttl="15m"
+	src/vault.sh $(NAME)-0 kv get secret/init \
+		|| src/vault.sh $(NAME)-0 kv put \
+				secret/init \
+					checksum=$(shell cat dist/build.checksum)
 
 vault/unseal: dist/unseal-keys.txt
 	: ## $@
@@ -205,7 +213,11 @@ vault/seal:
 test:
 	: ## $@
 	rsync -avh --delete t/ dist/t/
-	kubectl kustomize resources/tests \
-		| tee dist/chart/templates/tests/resources.yaml
 
 	# cd dist && prove -vr
+	helm test $(NAME) -n $(NAME)
+
+## status #######################################
+status:
+	: ## $@
+	helm status $(NAME) -n $(NAME) --show-resources

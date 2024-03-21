@@ -2,6 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 metadata:
   name: templates
+commonLabels:
+  app.kubernetes.io/name: esovault
 resources:
 - serviceaccount.auth-sa.yaml
 - secret.auth-sa-token.yaml

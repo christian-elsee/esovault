@@ -5,7 +5,13 @@ metadata:
 namespace: esovault-test
 sortOptions:
   order: fifo
+commonAnnotations:
+  "helm.sh/hook": test
+  "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+commonLabels:
+  app.kubernetes.io/name: esovault
+
 resources:
 - namespace.esovault-test.yaml
 - externalsecret.sanity-check.yaml
-- pod.sanity-check.yaml
+- pod.test-env-from-secret.yaml

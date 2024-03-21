@@ -2,9 +2,48 @@
 
 Kubernetes orchestration workflow for external secrets operator and hosted hashicorp vault. Orchestration is encapsulated within a standard `make` workflow. All workflow targets are idempotent.
 
-## vault
+## dependencies
 
-Orchestrate ha vault using `make` and `make install`
+Basic development environment dependency/version pairs.
+
+- gnu make, 4.4.1
+```sh
+$ make -v
+GNU Make 4.4.1
+Built for x86_64-apple-darwin22.3.0
+Copyright (C) 1988-2023 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+```
+
+- gpg (GnuPG), 2.4.4
+```sh
+$ gpg --version
+gpg (GnuPG) 2.4.4
+libgcrypt 1.10.3
+Copyright (C) 2024 g10 Code GmbH
+License GNU GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+```
+
+- kubectl, v1.29.2
+```sh
+ $ kubectl version
+Client Version: v1.29.2
+Kustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3
+Server Version: v1.29.2
+```
+
+- helm, v3.14.2
+```sh
+$ helm version
+version.BuildInfo{Version:"v3.14.2", GitCommit:"c309b6f0ff63856811846ce18f3bdc93d2b4d54b", GitTreeState:"clean", GoVersion:"go1.22.0"}
+```
+## install
+
+Orchestrate esochart using `make` and `make install` workflows.
 
 ```sh
 $ make
@@ -25,7 +64,25 @@ helm upgrade vault hashicorp/vault \
 ...
 ```
 
-Initialize cluster using `make vault/init`. Subsequent calls will not effect cluster state.
+Esovault chart dependencies are installed alongside esovault, in the same namespace
+
+```sh
+$ cat Chart.yaml | sed -n '/dependencies/,$p'
+dependencies:
+  - name: vault
+    repository: https://helm.releases.hashicorp.com
+    version: 0.27.0
+    alias: vault
+  - name: external-secrets
+    repository: https://charts.external-secrets.io
+    version: 0.9.13
+```
+```sh
+$ helm dependency list dist/chart -n esovault
+NAME              VERSION REPOSITORY                          STATUS
+vault             0.27.0  https://helm.releases.hashicorp.com ok
+external-secrets  0.9.13  https://charts.external-secrets.io  ok
+```
 
 ```sh
 $ make vault/init
@@ -60,3 +117,7 @@ $ make
 $ make install
 ...
 ```
+
+## License
+
+[MIT](https://choosealicense.com/licenses/mit/)
