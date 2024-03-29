@@ -4,5 +4,7 @@ metadata:
   name: crds
 commonLabels:
   app.kubernetes.io/name: esovault
+  app.kubernetes.io/version: "${CHECKSUM}"
 resources:
 - clustersecretsstore.vault.yaml
+- clusterexternalsecret.checksum.yaml

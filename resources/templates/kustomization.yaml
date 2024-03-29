@@ -4,6 +4,7 @@ metadata:
   name: templates
 commonLabels:
   app.kubernetes.io/name: esovault
+  app.kubernetes.io/version: "${CHECKSUM}"
 resources:
 - serviceaccount.auth-sa.yaml
 - secret.auth-sa-token.yaml

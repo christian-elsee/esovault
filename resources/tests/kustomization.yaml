@@ -10,8 +10,7 @@ commonAnnotations:
   "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 commonLabels:
   app.kubernetes.io/name: esovault
-
+  app.kubernetes.io/version: "${CHECKSUM}"
 resources:
 - namespace.esovault-test.yaml
-- externalsecret.sanity-check.yaml
 - pod.test-env-from-secret.yaml

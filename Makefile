@@ -33,7 +33,6 @@ distclean:
 	rm -rf dist
 clean: distclean
 	: ## $@
-	set -x
 	rm -rf assets/cluster-keys.json.gpg \
 				 assets/cluster-keys.json.gpg.sign
 	helm uninstall $(NAME) \
@@ -96,7 +95,6 @@ dist/build.checksum:
 	kubectl kustomize resources/tests \
 		| tee dist/chart/templates/tests/resources.yaml
 
-	helm dependency build dist/chart
 	find dist/chart \
 		-type f \
     -exec md5sum {} + \
@@ -104,6 +102,7 @@ dist/build.checksum:
 	| md5sum \
 	| cut -f1 -d" " \
 	| tee dist/build.checksum
+
 dist/assets/cluster-keys.json.gpg:
 	: ## $@
 	src/vault.sh $(NAME)-0 operator init \
@@ -117,10 +116,21 @@ dist/assets/cluster-keys.json.gpg:
 			--detach-sig $@
 
 build: dist/build.checksum
+build: export CHECKSUM := $(shell cat dist/build.checksum)
+build:
 	: ## $@
+	helm dependency build dist/chart
+	helm template $(NAME) dist/chart \
+		--skip-crds \
+		--wait \
+		--dependency-update \
+		--render-subchart-notes \
+		--create-namespace \
+		--namespace "$(NAME)" \
+	| envsubst >dist/chart.yaml
 	cat dist/build.checksum
 
-check: dist/chart
+check: dist/build.checksum
 	: ## $@
 	helm lint dist/chart --with-subcharts
 
@@ -145,22 +155,17 @@ assets/keys: dist/build.checksum \
 	tar -tvf assets/cluster-keys.tar.$(shell cat dist/build.checksum)
 
 ## install ######################################
+install/chart: dist/chart.yaml
+	: ## $@
+	kubectl apply \
+		-f dist/chart.yaml \
+		-n "$(NAME)"
+
 install/crds: dist/chart/crds/resources.yaml
 	: ## $@
 	kubectl apply \
 		-f dist/chart/crds/resources.yaml \
 		-n "$(NAME)"
-install/chart: dist/build.checksum
-	: ## $@
-	helm upgrade $(NAME) dist/chart \
-		--install \
-		--skip-crds \
-		--wait \
-		--dependency-update \
-		--render-subchart-notes \
-		--create-namespace \
-		--namespace "$(NAME)" \
-		--set sha="$(shell cat dist/build.checksum)"
 
 ## vault ########################################
 vault/init: dist/root-token.txt \
