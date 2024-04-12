@@ -1,4 +1,3 @@
-SHELL = /bin/bash
 .DEFAULT_GOAL := all
 .SHELLFLAGS := -euo pipefail $(if $(TRACE),-x,) -c
 .ONESHELL:
@@ -8,6 +7,7 @@ SHELL = /bin/bash
 				check \
 				install \
 				test \
+				loadenv \
 				assets/keys \
 				chart/* \
 				vault/* \
@@ -26,6 +26,7 @@ vault/unseal: assets/keys
 vault/seal:
 test: distclean dist build
 status:
+loadenv: buildenv
 
 ## clean ########################################
 distclean:
@@ -51,6 +52,7 @@ clean: distclean
 dist:
 	: ## $@
 	mkdir -p $@ \
+					 $@/env \
 					 $@/bin \
 					 $@/log \
 					 $@/chart \
@@ -62,31 +64,40 @@ dist:
 	cp Chart.* values.yaml -- $@/chart
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* \
 		 $@/bin/helm
-dist/ca.crt:
+
+dist/%: dist/env/%
+	: ## $@
+	cat $<
+dist/env/cacrt:
 	: ## $@
 	yq -re <$(KUBECONFIG) \
 		'.clusters[0].cluster."certificate-authority-data"' \
 	| base64 -d >$@
-dist/k8s-host.txt:
+dist/env/KUBE_SERVER:
 	: ## $@
 	yq -re <$(KUBECONFIG) \
-		'.clusters[0].cluster.server' \
-	| tee $@
-dist/unseal-keys.txt: dist/assets/cluster-keys.json.gpg
+		".clusters[0].cluster.server" \
+	>$@
+dist/env/unseal_keys: dist/assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify $<.sign $<
-	gpg -d <$< | jq -re ".unseal_keys_b64[]" \
-		>$@
-dist/root-token.txt: dist/assets/cluster-keys.json.gpg
+	gpg -d <$<
+		| jq -re ".unseal_keys_b64[]" \
+		| xargs \
+	>$@
+dist/env/VAULT_TOKEN: dist/assets/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify $<.sign $<
-	gpg -d <$< | jq -re ".root_token" >$@
-dist/auth-sa-token.txt:
+	gpg -d <$< \
+		| jq -re ".root_token" \
+	>$@
+dist/env/auth_sa_token:
 	: ## $@
 	kubectl -n $(NAME) get secret auth-sa-token -ojson \
 		| jq -re ".data.token" \
-		| base64 -d >$@
-dist/build.checksum:
+		| base64 -d \
+	>$@
+dist/env/CHECKSUM:
 	: ## $@
 	kubectl kustomize resources/crds \
 		| tee dist/chart/crds/resources.yaml
@@ -98,10 +109,10 @@ dist/build.checksum:
 	find dist/chart \
 		-type f \
     -exec md5sum {} + \
-	| sort -k 2 \
-	| md5sum \
-	| cut -f1 -d" " \
-	| tee dist/build.checksum
+		| sort -k 2 \
+		| md5sum \
+		| cut -f1 -d" " \
+	>$@
 
 dist/assets/cluster-keys.json.gpg:
 	: ## $@
@@ -115,8 +126,7 @@ dist/assets/cluster-keys.json.gpg:
 			--output $@.sign \
 			--detach-sig $@
 
-build: dist/build.checksum
-build: export CHECKSUM := $(shell cat dist/build.checksum)
+build: dist/CHECKSUM loadenv
 build:
 	: ## $@
 	helm dependency build dist/chart
@@ -128,27 +138,29 @@ build:
 		--create-namespace \
 		--namespace "$(NAME)" \
 	| envsubst >dist/chart.yaml
-	cat dist/build.checksum
 
-check: dist/build.checksum
+check: dist/CHECKSUM loadenv
 	: ## $@
-	helm lint dist/chart --with-subcharts
+	helm lint dist/chart \
+		--with-subcharts \
+		--set checksum=$(CHECKSUM)
 
 ## chart ########################################
-chart/lockfile:
+chart/lockfile: dist/chart/Chart.yaml
 	: ## $@
 	rm -rf dist/chart/Chart.lock
 	helm dependency update dist/chart
 
 ## assets #######################################
-assets/keys: dist/build.checksum \
+assets/keys: dist/CHECKSUM \
 						 dist/assets/cluster-keys.json.gpg \
-						 dist/assets/cluster-keys.json.gpg.sign
+						 dist/assets/cluster-keys.json.gpg.sign \
+						 loadenv
 	: ## $@
 	cp -f dist/assets/cluster-keys.json.gpg assets
 	cp -f dist/assets/cluster-keys.json.gpg.sign assets
 	tar -cv \
-			-f assets/cluster-keys.tar.$(shell cat dist/build.checksum) \
+			-f assets/cluster-keys.tar.$(CHECKSUM) \
 			-C assets \
 			-- cluster-keys.json.gpg \
 				 cluster-keys.json.gpg.sign
@@ -168,12 +180,13 @@ install/crds: dist/chart/crds/resources.yaml
 		-n "$(NAME)"
 
 ## vault ########################################
-vault/init: dist/root-token.txt \
-						dist/ca.crt \
-						dist/k8s-host.txt \
-						dist/auth-sa-token.txt \
-						dist/build.checksum \
-						vault/unseal
+vault/init: dist/VAULT_TOKEN \
+						dist/cacrt \
+						dist/KUBE_SERVER \
+						dist/AUTH_SA_TOKEN \
+						dist/CHECKSUM \
+						vault/unseal \
+						loadenv
 	: ## $@
 	src/vault.sh $(NAME)-0 login "$(shell cat dist/root-token.txt)"
 	src/vault.sh $(NAME)-0 secrets enable -path=secret -version=1 kv ||:
@@ -193,17 +206,17 @@ vault/init: dist/root-token.txt \
 				secret/init \
 					checksum=$(shell cat dist/build.checksum)
 
-vault/unseal: dist/unseal-keys.txt
+vault/unseal: dist/unseal_keys loadenv
 	: ## $@
-	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-0 operator unseal
+	src/vault.sh $(NAME)-0 operator unseal $(unseal_keys)
 
 	src/vault.sh $(NAME)-1 operator raft join \
 		http://$(NAME)-0.$(NAME)-internal:8200
-	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-1 operator unseal
+	src/vault.sh $(NAME)-1 operator unseal $(unseal_keys)
 
 	src/vault.sh $(NAME)-2 operator raft join \
 		http://$(NAME)-0.$(NAME)-internal:8200
-	<dist/unseal-keys.txt xargs -n1 -- src/vault.sh $(NAME)-2 operator unseal
+	src/vault.sh $(NAME)-2 operator unseal $(unseal_keys)
 
 	src/vault.sh $(NAME)-0 status
 	src/vault.sh $(NAME)-1 status
@@ -226,3 +239,15 @@ test:
 status:
 	: ## $@
 	helm status $(NAME) -n $(NAME) --show-resources
+
+## loadenv ######################################
+buildenv:
+	: ## $@
+	src/buildmkenv.sh dist/env >dist/env.mk
+
+loadenv:
+	$(eval include dist/env.mk)
+
+testenv: loadenv
+testenv:
+	echo "$(CACRT)"
