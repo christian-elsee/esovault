@@ -7,7 +7,6 @@
 				check \
 				install \
 				test \
-				loadenv \
 				assets/keys \
 				chart/* \
 				vault/* \
@@ -21,12 +20,12 @@ export KUBECONFIG ?= $(HOME)/.kube/config
 ## interface ####################################
 all: distclean dist build check
 install: install/chart vault/init install/crds assets/keys
-chart/lockfile: distclean dist
-vault/unseal: assets/keys
-vault/seal:
-test: distclean dist build
+clean:
+test:
 status:
-loadenv: buildenv
+chart/lockfile: 
+vault/unseal:
+vault/seal:
 
 ## clean ########################################
 distclean:
@@ -36,11 +35,7 @@ clean: distclean
 	: ## $@
 	rm -rf assets/cluster-keys.json.gpg \
 				 assets/cluster-keys.json.gpg.sign
-	helm uninstall $(NAME) \
-		--cascade foreground \
-		--wait \
-		-n $(NAME) \
-	||:
+	kubectl delete all -n $(NAME) --all ||:
 
 	# remove persistent volumes
 	kubectl delete pvc --all -n $(NAME)  ||:
@@ -60,10 +55,22 @@ dist:
 					 $@/chart/templates \
 					 $@/chart/templates/tests
 
-	cp -rf assets src policy -- $@/
-	cp Chart.* values.yaml -- $@/chart
+	cp -rf resources assets src policy $@/
+	cp Chart.* values.yaml $@/chart
 	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* \
 		 $@/bin/helm
+
+dist/assets/cluster-keys.json.gpg:
+	: ## $@
+	src/vault.sh $(NAME)-0 operator init \
+    -key-shares=3 \
+    -key-threshold=3 \
+    -format=json \
+  | gpg -aer $(NAME) \
+  | tee $@
+	gpg -u $(shell basename $(PWD)) \
+			--output $@.sign \
+			--detach-sig $@
 
 dist/%: dist/env/%
 	: ## $@
@@ -99,14 +106,7 @@ dist/env/auth_sa_token:
 	>$@
 dist/env/CHECKSUM:
 	: ## $@
-	kubectl kustomize resources/crds \
-		| tee dist/chart/crds/resources.yaml
-	kubectl kustomize resources/templates \
-		| tee dist/chart/templates/resources.yaml
-	kubectl kustomize resources/tests \
-		| tee dist/chart/templates/tests/resources.yaml
-
-	find dist/chart \
+	find dist/resources dist/chart \
 		-type f \
     -exec md5sum {} + \
 		| sort -k 2 \
@@ -114,22 +114,22 @@ dist/env/CHECKSUM:
 		| cut -f1 -d" " \
 	>$@
 
-dist/assets/cluster-keys.json.gpg:
-	: ## $@
-	src/vault.sh $(NAME)-0 operator init \
-    -key-shares=3 \
-    -key-threshold=3 \
-    -format=json \
-  | gpg -aer $(NAME) \
-  | tee $@
-	gpg -u $(shell basename $(PWD)) \
-			--output $@.sign \
-			--detach-sig $@
-
-build: dist/CHECKSUM loadenv
+build: dist/CHECKSUM
 build:
 	: ## $@
-	helm dependency build dist/chart
+	kubectl kustomize resources/crds   \
+		| src/export.sh dist/env envsubst \
+		| tee dist/chart/crds/resources.yaml 
+	kubectl kustomize resources/templates   \
+		| src/export.sh dist/env envsubst \
+		| tee dist/chart/templates/resources.yaml
+	kubectl kustomize resources/tests   \
+		| src/export.sh dist/env envsubst \
+		| tee dist/chart/templates/tests/resources.yaml
+	
+		>$@
+	helm dependency build dist/chart \
+		--skip-refresh
 	helm template $(NAME) dist/chart \
 		--skip-crds \
 		--wait \
@@ -137,16 +137,18 @@ build:
 		--render-subchart-notes \
 		--create-namespace \
 		--namespace "$(NAME)" \
-	| envsubst >dist/chart.yaml
+	| src/export.sh dist/env envsubst \
+	| tee dist/chart.yaml
 
-check: dist/CHECKSUM loadenv
+check: dist/chart.yaml
 	: ## $@
 	helm lint dist/chart \
 		--with-subcharts \
 		--set checksum=$(CHECKSUM)
+	kubectl apply --dry-run=client -f "$^"
 
 ## chart ########################################
-chart/lockfile: dist/chart/Chart.yaml
+chart/lockfile: distclean dist dist/chart/Chart.yaml
 	: ## $@
 	rm -rf dist/chart/Chart.lock
 	helm dependency update dist/chart
@@ -154,8 +156,7 @@ chart/lockfile: dist/chart/Chart.yaml
 ## assets #######################################
 assets/keys: dist/CHECKSUM \
 						 dist/assets/cluster-keys.json.gpg \
-						 dist/assets/cluster-keys.json.gpg.sign \
-						 loadenv
+						 dist/assets/cluster-keys.json.gpg.sign
 	: ## $@
 	cp -f dist/assets/cluster-keys.json.gpg assets
 	cp -f dist/assets/cluster-keys.json.gpg.sign assets
@@ -169,9 +170,7 @@ assets/keys: dist/CHECKSUM \
 ## install ######################################
 install/chart: dist/chart.yaml
 	: ## $@
-	kubectl apply \
-		-f dist/chart.yaml \
-		-n "$(NAME)"
+	kubectl apply --wait=true -f dist/chart.yaml
 
 install/crds: dist/chart/crds/resources.yaml
 	: ## $@
@@ -185,8 +184,7 @@ vault/init: dist/VAULT_TOKEN \
 						dist/KUBE_SERVER \
 						dist/AUTH_SA_TOKEN \
 						dist/CHECKSUM \
-						vault/unseal \
-						loadenv
+						vault/unseal
 	: ## $@
 	src/vault.sh $(NAME)-0 login "$(shell cat dist/root-token.txt)"
 	src/vault.sh $(NAME)-0 secrets enable -path=secret -version=1 kv ||:
@@ -204,9 +202,9 @@ vault/init: dist/VAULT_TOKEN \
 	src/vault.sh $(NAME)-0 kv get secret/init \
 		|| src/vault.sh $(NAME)-0 kv put \
 				secret/init \
-					checksum=$(shell cat dist/build.checksum)
+					checksum=$(shell cat dist/env/CHECKSUM)
 
-vault/unseal: dist/unseal_keys loadenv
+vault/unseal: assets/keys dist/unseal_keys
 	: ## $@
 	src/vault.sh $(NAME)-0 operator unseal $(unseal_keys)
 
@@ -228,7 +226,7 @@ vault/seal:
 	src/vault.sh $(NAME)-0 operator seal
 
 ## test #########################################
-test:
+test: distclean dist build
 	: ## $@
 	rsync -avh --delete t/ dist/t/
 
@@ -240,14 +238,3 @@ status:
 	: ## $@
 	helm status $(NAME) -n $(NAME) --show-resources
 
-## loadenv ######################################
-buildenv:
-	: ## $@
-	src/buildmkenv.sh dist/env >dist/env.mk
-
-loadenv:
-	$(eval include dist/env.mk)
-
-testenv: loadenv
-testenv:
-	echo "$(CACRT)"

@@ -3,9 +3,8 @@
 !.gitignore
 !Makefile
 !README.md
-!Chart.lock
-!Chart.yaml
-!values.yaml
+!chart/
+!chart/**
 !src
 !src/*.sh
 !resources/

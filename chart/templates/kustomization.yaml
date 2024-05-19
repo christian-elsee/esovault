@@ -6,6 +6,7 @@ commonLabels:
   app.kubernetes.io/name: esovault
   app.kubernetes.io/version: "${CHECKSUM}"
 resources:
+- namespace.esovault.yaml
 - serviceaccount.auth-sa.yaml
 - secret.auth-sa-token.yaml
 - clusterrolebinding.role-tokenreview-binding.yaml
