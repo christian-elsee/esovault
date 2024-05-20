@@ -41,6 +41,13 @@ Server Version: v1.29.2
 $ helm version
 version.BuildInfo{Version:"v3.14.2", GitCommit:"c309b6f0ff63856811846ce18f3bdc93d2b4d54b", GitTreeState:"clean", GoVersion:"go1.22.0"}
 ```
+
+- rsync, v3.3.0
+```sh
+$ rsync --version | sed -n 1p
+rsync  version 3.3.0  protocol version 31
+```
+
 ## install
 
 Orchestrate esochart using `make` and `make install` workflows.

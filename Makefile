@@ -14,16 +14,15 @@
 
 ## env ##########################################
 export NAME := $(shell basename $(PWD))
-export PATH := ./bin:$(PATH)
+export PATH := dist/bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
 
 ## interface ####################################
 all: distclean dist build check
-install: install/chart vault/init install/crds assets/keys
+install: install/chart vault/init install/crds
 clean:
 test:
 status:
-chart/lockfile: 
 vault/unseal:
 vault/seal:
 
@@ -31,46 +30,65 @@ vault/seal:
 distclean:
 	: ## $@
 	rm -rf dist
-clean: distclean
+clean:
 	: ## $@
-	rm -rf assets/cluster-keys.json.gpg \
-				 assets/cluster-keys.json.gpg.sign
-	kubectl delete all -n $(NAME) --all ||:
+	rm -rf artifacts/*
 
+	helm delete --cascade foreground esovault ||:
+	kubectl delete namespace $(NAME) --wait --cascade=foreground ||:
+	kubectl delete namespace $(NAME)-test --wait --cascade=foreground ||:
+	kubectl delete MutatingWebhookConfiguration,clusterrole,clusterrolebinding,crd \
+		--all-namespaces \
+		--selector "app.kubernetes.io/instance=$(NAME)" \
+		--cascade=foreground \
+		--wait ||:
+	kubectl delete MutatingWebhookConfiguration,clusterrole,clusterrolebinding,crd \
+		--all-namespaces \
+		--selector "app.kubernetes.io/name=$(NAME)" \
+		--cascade=foreground \
+		--wait ||:
+	#exit 33
+	#kubectl delete all -n $(NAME) --all --cascade=foreground ||:
+	#kubectl delete configmaps,secrets,crds -n $(NAME) --cascade=foreground --wait
+
+	#kubectl delete all -n $(NAME)-test --all ||:
+
+	#kubectl delete clusterresource
+	# remove cluster-level resources
+	#kubectl get 
 	# remove persistent volumes
-	kubectl delete pvc --all -n $(NAME)  ||:
-	kubectl delete pv --all -n $(NAME) ||:
-	kubectl delete namespace $(NAME) ||:
+	#kubectl delete pvc --all -n $(NAME)  ||:
+	#kubectl delete pv --all -n $(NAME) ||:
+	#kubectl delete namespace $(NAME) ||:
 	kubectl delete clustersecretstore vault ||:
 
 ## dist #########################################
 dist:
 	: ## $@
-	mkdir -p $@ \
+	mkdir -p $@/.   \
 					 $@/env \
-					 $@/bin \
-					 $@/log \
-					 $@/chart \
-					 $@/chart/crds \
-					 $@/chart/templates \
-					 $@/chart/templates/tests
+					 $@/bin
 
-	cp -rf resources assets src policy $@/
-	cp Chart.* values.yaml $@/chart
-	cp assets/helm-$(shell uname -s)-$(shell uname -m)-* \
-		 $@/bin/helm
+	# cp needed artifacts to build chart dist
+	cp -rf policy $@/
 
-dist/assets/cluster-keys.json.gpg:
-	: ## $@
-	src/vault.sh $(NAME)-0 operator init \
-    -key-shares=3 \
-    -key-threshold=3 \
-    -format=json \
-  | gpg -aer $(NAME) \
-  | tee $@
-	gpg -u $(shell basename $(PWD)) \
-			--output $@.sign \
-			--detach-sig $@
+	# cp chart directory structure, dependency files and any
+	# existing artifacts
+	find chart -type d -print0 \
+		| tac -s "" \
+		| xargs -0I% -- mkdir -p "$@/%"
+	cp -f chart/Chart.* $@/chart
+	cp -rf artifacts/charts $@/chart ||:
+
+	# cp bin assets needed to manage charts against k8s cluster
+	tar -tf assets/helm-$(shell uname -s)-$(shell uname -m)-* \
+		| sed -n 1p \
+		| xargs -I% -- \
+			tar -xv \
+					-f assets/helm-$(shell uname -s)-$(shell uname -m)-* \
+					-C dist/bin \
+					--strip-components=1 \
+					%/helm
 
 dist/%: dist/env/%
 	: ## $@
@@ -85,14 +103,14 @@ dist/env/KUBE_SERVER:
 	yq -re <$(KUBECONFIG) \
 		".clusters[0].cluster.server" \
 	>$@
-dist/env/unseal_keys: dist/assets/cluster-keys.json.gpg
+dist/env/unseal_keys: artifacts/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$<
 		| jq -re ".unseal_keys_b64[]" \
 		| xargs \
 	>$@
-dist/env/VAULT_TOKEN: dist/assets/cluster-keys.json.gpg
+dist/env/VAULT_TOKEN: artifacts/cluster-keys.json.gpg
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$< \
@@ -104,79 +122,99 @@ dist/env/auth_sa_token:
 		| jq -re ".data.token" \
 		| base64 -d \
 	>$@
-dist/env/CHECKSUM:
+
+## build ########################################
+artifacts/cluster-keys.json.gpg:
 	: ## $@
-	find dist/resources dist/chart \
+	src/vault.sh $(NAME)-0 operator init \
+    -key-shares=3 \
+    -key-threshold=3 \
+    -format=json \
+  | gpg -aer $(NAME) \
+  | tee $@
+	gpg -u $(shell basename $(PWD)) \
+			--output $@.sign \
+			--detach-sig $@
+
+artifacts/checksum:
+	: # $@
+	# publish determinitive checksum to artifacts
+	find chart \
 		-type f \
     -exec md5sum {} + \
 		| sort -k 2 \
 		| md5sum \
 		| cut -f1 -d" " \
-	>$@
+		| tee $@ 
 
-build: dist/CHECKSUM
-build:
+artifacts/charts:
 	: ## $@
-	kubectl kustomize resources/crds   \
-		| src/export.sh dist/env envsubst \
-		| tee dist/chart/crds/resources.yaml 
-	kubectl kustomize resources/templates   \
-		| src/export.sh dist/env envsubst \
-		| tee dist/chart/templates/resources.yaml
-	kubectl kustomize resources/tests   \
-		| src/export.sh dist/env envsubst \
-		| tee dist/chart/templates/tests/resources.yaml
-	
-		>$@
-	helm dependency build dist/chart \
+	# build chart dependencies and cache against artifacts
+	helm dependency update dist/chart \
 		--skip-refresh
+	rsync -av --delete dist/chart/charts/ $@
+	
+build: artifacts/checksum artifacts/charts 
+	: # $@
+	# publish chart manifests to artifacts
+	# use kustomize to generate chart resource manifests
+	find chart -mindepth 1 -type d -print0 \
+		| xargs -0I% -- sh -c 'kubectl kustomize % >dist/%/resources.yaml' _
+
+	# generate single file chart resource manifest as a sanity check of the build process
 	helm template $(NAME) dist/chart \
+		--dependency-update \
+		--render-subchart-notes \
+		--create-namespace \
+		--namespace "$(NAME)" \
+		--set "name=$(NAME)" \
+		--set "checksum=$(shell cat artifacts/checksum)" \
+		--dry-run \
+	>artifacts/manifest.yaml
+
+check: dist/chart artifacts/checksum
+	: ## $@
+	# perform a client side dry run of helm install process as a santiy
+	# check of helm workflow against the generated chart resources
+	helm upgrade $(NAME) dist/chart \
+		--install \
+		--dry-run \
+		--dependency-update \
+		--render-subchart-notes \
+		--create-namespace \
+		--namespace "$(NAME)" \
+		--set "name=$(NAME)" \
+		--set "checksum=$(shell cat artifacts/checksum)" \
+	| tee -a artifacts/log >/dev/null
+
+## install ######################################
+install: artifacts/checksum
+	: ## $@
+	tar -cv \
+			-f artifacts/cluster-keys.tar.$(shell cat artifacts/checksum) \
+			-C artifacts \
+			-- cluster-keys.json.gpg \
+				 cluster-keys.json.gpg.sign
+	tar -tvf artifacts/cluster-keys.tar.$(shell cat artifacts/checksum)
+
+install/chart: dist/chart
+	: ## $@
+	helm upgrade $(NAME) dist/chart \
+		--install \
 		--skip-crds \
 		--wait \
 		--dependency-update \
 		--render-subchart-notes \
 		--create-namespace \
 		--namespace "$(NAME)" \
-	| src/export.sh dist/env envsubst \
-	| tee dist/chart.yaml
-
-check: dist/chart.yaml
-	: ## $@
-	helm lint dist/chart \
-		--with-subcharts \
-		--set checksum=$(CHECKSUM)
-	kubectl apply --dry-run=client -f "$^"
-
-## chart ########################################
-chart/lockfile: distclean dist dist/chart/Chart.yaml
-	: ## $@
-	rm -rf dist/chart/Chart.lock
-	helm dependency update dist/chart
-
-## assets #######################################
-assets/keys: dist/CHECKSUM \
-						 dist/assets/cluster-keys.json.gpg \
-						 dist/assets/cluster-keys.json.gpg.sign
-	: ## $@
-	cp -f dist/assets/cluster-keys.json.gpg assets
-	cp -f dist/assets/cluster-keys.json.gpg.sign assets
-	tar -cv \
-			-f assets/cluster-keys.tar.$(CHECKSUM) \
-			-C assets \
-			-- cluster-keys.json.gpg \
-				 cluster-keys.json.gpg.sign
-	tar -tvf assets/cluster-keys.tar.$(shell cat dist/build.checksum)
-
-## install ######################################
-install/chart: dist/chart.yaml
-	: ## $@
-	kubectl apply --wait=true -f dist/chart.yaml
-
+		--set "name=$(NAME)" \
+		--set "checksum=$(shell cat artifacts/checksum)" 
+	
 install/crds: dist/chart/crds/resources.yaml
 	: ## $@
 	kubectl apply \
 		-f dist/chart/crds/resources.yaml \
-		-n "$(NAME)"
+		-n "$(NAME)" \
 
 ## vault ########################################
 vault/init: dist/VAULT_TOKEN \

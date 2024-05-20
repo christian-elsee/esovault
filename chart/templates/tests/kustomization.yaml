@@ -6,11 +6,15 @@ namespace: esovault-test
 sortOptions:
   order: fifo
 commonAnnotations:
+  "meta.helm.sh/release-name": "{{ .Values.name }}"
   "helm.sh/hook": test
   "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+
 commonLabels:
   app.kubernetes.io/name: esovault
-  app.kubernetes.io/version: "${CHECKSUM}"
+  app.kubernetes.io/version: "{{ .Values.checksum }}"
+  app.kubernetes.io/managed-by: Helm  
+
 resources:
 - namespace.esovault-test.yaml
 - pod.test-env-from-secret.yaml

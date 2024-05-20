@@ -4,7 +4,11 @@ metadata:
   name: templates
 commonLabels:
   app.kubernetes.io/name: esovault
-  app.kubernetes.io/version: "${CHECKSUM}"
+  app.kubernetes.io/version: "{{ .Values.checksum }}"
+  app.kubernetes.io/managed-by: Helm  
+commonAnnotations:
+  "meta.helm.sh/release-name": "{{ .Values.name }}"
+    
 resources:
 - namespace.esovault.yaml
 - serviceaccount.auth-sa.yaml
