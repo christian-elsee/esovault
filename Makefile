@@ -154,6 +154,7 @@ artifacts/checksum:
 artifacts/charts:
 	: ## $@
 	# build chart dependencies and cache against artifacts
+	helm repo update
 	helm dependency update dist/chart \
 		--skip-refresh
 	rsync -av --delete dist/chart/charts/ $@
