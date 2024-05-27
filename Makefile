@@ -33,32 +33,9 @@ clean:
 	: ## $@
 	rm -rf artifacts/*
 
-	helm delete --cascade foreground esovault ||:
+	helm delete --cascade=foreground -n esovault esovault ||:
 	kubectl delete namespace $(NAME) --wait --cascade=foreground ||:
 	kubectl delete namespace $(NAME)-test --wait --cascade=foreground ||:
-	kubectl delete MutatingWebhookConfiguration,clusterrole,clusterrolebinding,crd \
-		--all-namespaces \
-		--selector "app.kubernetes.io/instance=$(NAME)" \
-		--cascade=foreground \
-		--wait ||:
-	kubectl delete MutatingWebhookConfiguration,clusterrole,clusterrolebinding,crd \
-		--all-namespaces \
-		--selector "app.kubernetes.io/name=$(NAME)" \
-		--cascade=foreground \
-		--wait ||:
-	#exit 33
-	#kubectl delete all -n $(NAME) --all --cascade=foreground ||:
-	#kubectl delete configmaps,secrets,crds -n $(NAME) --cascade=foreground --wait
-
-	#kubectl delete all -n $(NAME)-test --all ||:
-
-	#kubectl delete clusterresource
-	# remove cluster-level resources
-	#kubectl get 
-	# remove persistent volumes
-	#kubectl delete pvc --all -n $(NAME)  ||:
-	#kubectl delete pv --all -n $(NAME) ||:
-	#kubectl delete namespace $(NAME) ||:
 	kubectl delete clustersecretstore vault ||:
 
 ## dist #########################################
@@ -126,7 +103,6 @@ dist/env/auth_sa_token:
 artifacts/vault: artifacts/checksum
 	: ## $@
 	# init vault leader, encrypt keys and write to disk
-	mkdir -p $@
 	src/vault.sh $(NAME)-0 operator init \
     -key-shares=3 \
     -key-threshold=3 \
