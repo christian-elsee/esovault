@@ -10,7 +10,6 @@ commonAnnotations:
   "meta.helm.sh/release-name": "{{ .Values.name }}"
     
 resources:
-- namespace.esovault.yaml
 - serviceaccount.auth-sa.yaml
 - secret.auth-sa-token.yaml
 - clusterrolebinding.role-tokenreview-binding.yaml

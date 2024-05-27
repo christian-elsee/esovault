@@ -7,7 +7,6 @@
 				check \
 				install \
 				test \
-				assets/keys \
 				chart/* \
 				vault/* \
 				install/*
@@ -19,7 +18,7 @@ export KUBECONFIG ?= $(HOME)/.kube/config
 
 ## interface ####################################
 all: distclean dist build check
-install: install/chart vault/init install/crds
+install: install/chart vault/init install/crds artifacts/vault
 clean:
 test:
 status:
@@ -103,14 +102,14 @@ dist/env/KUBE_SERVER:
 	yq -re <$(KUBECONFIG) \
 		".clusters[0].cluster.server" \
 	>$@
-dist/env/unseal_keys: artifacts/cluster-keys.json.gpg
+dist/env/unseal_keys: artifacts/vault
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$<
 		| jq -re ".unseal_keys_b64[]" \
 		| xargs \
 	>$@
-dist/env/VAULT_TOKEN: artifacts/cluster-keys.json.gpg
+dist/env/VAULT_TOKEN: artifacts/vault
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$< \
@@ -124,17 +123,22 @@ dist/env/auth_sa_token:
 	>$@
 
 ## build ########################################
-artifacts/cluster-keys.json.gpg:
+artifacts/vault: artifacts/checksum
 	: ## $@
+	# init vault leader, encrypt keys and write to disk
+	mkdir -p $@
 	src/vault.sh $(NAME)-0 operator init \
     -key-shares=3 \
     -key-threshold=3 \
     -format=json \
   | gpg -aer $(NAME) \
   | tee $@
+	# sign encrypted keys
 	gpg -u $(shell basename $(PWD)) \
 			--output $@.sign \
 			--detach-sig $@
+	# publish keys/sig tar pair to artifacts w/appended checksum
+	tar -cvf $@.tar.$(shell cat artifacts/checksum) $@ $@.sign -C artifacts 
 
 artifacts/checksum:
 	: # $@
@@ -188,16 +192,7 @@ check: dist/chart artifacts/checksum
 	| tee -a artifacts/log >/dev/null
 
 ## install ######################################
-install: artifacts/checksum
-	: ## $@
-	tar -cv \
-			-f artifacts/cluster-keys.tar.$(shell cat artifacts/checksum) \
-			-C artifacts \
-			-- cluster-keys.json.gpg \
-				 cluster-keys.json.gpg.sign
-	tar -tvf artifacts/cluster-keys.tar.$(shell cat artifacts/checksum)
-
-install/chart: dist/chart
+install/chart: dist/chart artifacts/checksum
 	: ## $@
 	helm upgrade $(NAME) dist/chart \
 		--install \
@@ -224,14 +219,14 @@ vault/init: dist/VAULT_TOKEN \
 						dist/CHECKSUM \
 						vault/unseal
 	: ## $@
-	src/vault.sh $(NAME)-0 login "$(shell cat dist/root-token.txt)"
+	src/vault.sh $(NAME)-0 login "$(shell cat dist/env/VAULT_TOKEN)"
 	src/vault.sh $(NAME)-0 secrets enable -path=secret -version=1 kv ||:
 	src/vault.sh $(NAME)-0 policy write read_only -<dist/policy/read_only.json
 	src/vault.sh $(NAME)-0 auth enable -path=kubernetes/internal kubernetes ||:
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/config \
-		token_reviewer_jwt="$(shell cat dist/auth-sa-token.txt)" \
-		kubernetes_host="$(shell cat dist/k8s-host.txt)" \
-		kubernetes_ca_cert="$$(cat dist/ca.crt)" # this has to process subs to account for newlines
+		token_reviewer_jwt="$(shell cat dist/env/AUTH_SA_TOKEN)" \
+		kubernetes_host="$(shell cat dist/env/KUBE_SERVER)" \
+		kubernetes_ca_cert="$$(cat dist/env/cacrt)" # this has to process subs to account for newlines
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \
 		bound_service_account_namespaces="$(NAME)" \
@@ -240,19 +235,19 @@ vault/init: dist/VAULT_TOKEN \
 	src/vault.sh $(NAME)-0 kv get secret/init \
 		|| src/vault.sh $(NAME)-0 kv put \
 				secret/init \
-					checksum=$(shell cat dist/env/CHECKSUM)
+					checksum=$(shell cat artifacts/checksum)
 
-vault/unseal: assets/keys dist/unseal_keys
+vault/unseal: dist/unseal_keys
 	: ## $@
-	src/vault.sh $(NAME)-0 operator unseal $(unseal_keys)
+	src/vault.sh $(NAME)-0 operator unseal $(shell cat dist/env/unseal_keys)
 
 	src/vault.sh $(NAME)-1 operator raft join \
 		http://$(NAME)-0.$(NAME)-internal:8200
-	src/vault.sh $(NAME)-1 operator unseal $(unseal_keys)
+	src/vault.sh $(NAME)-1 operator unseal $(shell cat dist/env/unseal_keys)
 
 	src/vault.sh $(NAME)-2 operator raft join \
 		http://$(NAME)-0.$(NAME)-internal:8200
-	src/vault.sh $(NAME)-2 operator unseal $(unseal_keys)
+	src/vault.sh $(NAME)-2 operator unseal $(shell cat dist/env/unseal_keys)
 
 	src/vault.sh $(NAME)-0 status
 	src/vault.sh $(NAME)-1 status
