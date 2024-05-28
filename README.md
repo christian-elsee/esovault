@@ -48,15 +48,24 @@ $ rsync --version | sed -n 1p
 rsync  version 3.3.0  protocol version 31
 ```
 
+- yq, v3.4.3
+```sh
+$ yq --version
+yq 3.4.3
+```
+
 ## install
 
-Orchestrate esochart using `make` and `make install` workflows.
+Orchestrate esochart using `make` workflow. 
 
+Build and validate chart artifacts against `dist/chart`.
 ```sh
 $ make
 : ## distclean
 ...
 ```
+
+Install chart.  
 ```sh
 $ make install
 : ## install/vault
