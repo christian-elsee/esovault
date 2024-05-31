@@ -13,3 +13,5 @@ resources:
 - serviceaccount.auth-sa.yaml
 - secret.auth-sa-token.yaml
 - clusterrolebinding.role-tokenreview-binding.yaml
+- clustersecretsstore.vault.yaml
+- clusterexternalsecret.checksum.yaml
