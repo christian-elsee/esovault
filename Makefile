@@ -18,7 +18,7 @@ export KUBECONFIG ?= $(HOME)/.kube/config
 
 ## interface ####################################
 all: distclean dist build check
-install: install/crds install/chart vault/init  artifacts/vault
+install: install/crds install/chart vault/bootstrap 
 clean:
 test:
 status:
@@ -31,12 +31,18 @@ distclean:
 	rm -rf dist
 clean:
 	: ## $@
-	helm delete --cascade=foreground -n $(NAME) $(NAME) ||:
+	helm delete $(NAME) \
+		-n $(NAME) \
+		--debug \
+		--no-hooks \
+		--ignore-not-found \
+		--cascade=foreground \
+	||:
 	kubectl delete namespace $(NAME) --wait --cascade=foreground ||:
 	kubectl delete namespace $(NAME)-test --wait --cascade=foreground ||:
 	kubectl delete clustersecretstore all ||:
 	kubectl delete clusterexternalsecret all ||:
-	kubectl delete -f dist/chart/crds
+	kubectl delete -f dist/chart/crds ||:
 
 ## dist #########################################
 dist:
@@ -71,42 +77,42 @@ dist/store/cacrt:
 	yq -re <$(KUBECONFIG) \
 		'.clusters[0].cluster."certificate-authority-data"' \
 		| base64 -d \
-		| gpg -aer $(NAME) 
+		| gpg -aer $(NAME) \
 		| tee $@
 dist/store/KUBE_SERVER:
 	: ## $@
 	yq -re <$(KUBECONFIG) \
 		".clusters[0].cluster.server" \
-		| gpg -aer $(NAME) 
+		| gpg -aer $(NAME) \
 		| tee $@		
-dist/store/unseal_keys: dist/artifacts/vault
+dist/store/unseal_keys: dist/artifacts/vault-bootstrap.gpg
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$< \
 		| jq -re ".unseal_keys_b64[]" \
 		| xargs \
-		| gpg -aer $(NAME) 
+		| gpg -aer $(NAME) \
 		| tee $@		
-dist/store/VAULT_TOKEN: dist/artifacts/vault
+dist/store/VAULT_TOKEN: dist/artifacts/vault-bootstrap.gpg
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$< \
 		| jq -re ".root_token" \
-		| gpg -aer $(NAME) 
+		| gpg -aer $(NAME) \
 		| tee $@	
 dist/store/auth_sa_token:
 	: ## $@
 	kubectl -n $(NAME) get secret auth-sa-token -ojson \
 		| jq -re ".data.token" \
 		| base64 -d \
-		| gpg -aer $(NAME) 
+		| gpg -aer $(NAME) \
 		| tee $@		
-dist/store/vault: dist/store/checksum
+dist/artifacts/vault-bootstrap.gpg: dist/checksum
 	: ## $@
 	# init vault leader, encrypt keys and write to disk
 	src/vault.sh $(NAME)-0 operator init \
-    -key-shares=3 \
-    -key-threshold=3 \
+    -key-shares=1 \
+    -key-threshold=1 \
     -format=json \
   | gpg -aer $(NAME) \
   | tee $@
@@ -114,13 +120,16 @@ dist/store/vault: dist/store/checksum
 	gpg -u $(shell basename $(PWD)) \
 			--output $@.sign \
 			--detach-sig $@
-	# publish keys/sig tar pair to artifacts w/appended checksum
-	tar -cvf $@.tar.$(shell cat dist/store/checksum) $@ $@.sign -C artifacts 
+	# publish keys/sig tar pair to assets w/appended checksum
+	tar -cv \
+			-C dist/artifacts \
+			-f assets/$(notdir $@).tar.$(shell cat $<) \
+			-- $(notdir $@) $(notdir $@).sign 
 dist/store/digest: chart/Chart.lock
 	: ## $@
 	# cp cached chart dependencies, from assets, if they exist, using
 	# chart.lock digest as a hash key	
-	<chart/Chart.lock yq -re ".digest" \
+	<$< yq -re ".digest" \
 		| sed -En 's/sha256://p' \
 		| tee $@ \
 		| xargs -rI% -- cp -rf assets/charts.% dist/chart/charts \
@@ -129,7 +138,7 @@ dist/store/digest: chart/Chart.lock
 dist/checksum:
 	: # $@
 	# publish determinitive checksum to artifacts
-	find chart \
+	find chart policy \
 		-type f \
     -exec md5sum {} + \
 		| sort -k 2 \
@@ -188,7 +197,7 @@ check: dist/chart dist/chart/crds/resources.yaml dist/checksum
 	kubectl apply \
 		--dry-run=client \
 		-f dist/chart/crds/resources.yaml \
-	| tee dist/artifacts/log
+	| tee -a dist/artifacts/log
 
 	helm lint dist/chart \
 		--debug \
@@ -196,13 +205,13 @@ check: dist/chart dist/chart/crds/resources.yaml dist/checksum
 		--namespace "$(NAME)" \
 		--set "name=$(NAME)" \
 		--set "checksum=$(shell cat dist/checksum)" \
- 	| tee dist/artifacts/log
+ 	| tee -a dist/artifacts/log
 
 
 ## install ######################################
 install/crds: dist/chart/crds/resources.yaml
 	: ## $@
-	kubectl apply -f $<
+	kubectl apply -f $< --server-side
 
 install/chart: dist/chart dist/checksum
 	: ## $@
@@ -210,28 +219,33 @@ install/chart: dist/chart dist/checksum
 		--install \
 		--wait \
 		--skip-crds \
+		--debug \
 		--dependency-update \
 		--render-subchart-notes \
 		--create-namespace \
 		--namespace "$(NAME)" \
 		--set "name=$(NAME)" \
-		--set "checksum=$(shell cat dist/checksum)" 
+		--set "checksum=$(shell cat dist/checksum)" \
+		--set "eso.installCRDs=false" \
+		--set "vault.installCRDs=false" \
+	| tee -a dist/artifacts/log
 
 ## vault ########################################
-vault/init: dist/VAULT_TOKEN \
-						dist/cacrt \
-						dist/KUBE_SERVER \
-						dist/auth_sa_token \
-						vault/unseal
+vault/bootstrap:	dist/artifacts/vault-bootstrap.gpg \
+	          		 	dist/store/VAULT_TOKEN \
+									dist/store/cacrt \
+									dist/store/KUBE_SERVER \
+									dist/store/auth_sa_token \
+									vault/unseal
 	: ## $@
-	src/vault.sh $(NAME)-0 login "$(shell cat dist/env/VAULT_TOKEN)"
+	src/vault.sh $(NAME)-0 login "$(shell gpg -d <dist/store/VAULT_TOKEN)"
 	src/vault.sh $(NAME)-0 secrets enable -path=secret -version=1 kv ||:
 	src/vault.sh $(NAME)-0 policy write read_only -<dist/policy/read_only.json
 	src/vault.sh $(NAME)-0 auth enable -path=kubernetes/internal kubernetes ||:
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/config \
-		token_reviewer_jwt="$(shell cat dist/env/auth_sa_token)" \
-		kubernetes_host="$(shell cat dist/env/KUBE_SERVER)" \
-		kubernetes_ca_cert="$$(cat dist/env/cacrt)" # this has to process subs to account for newlines
+		token_reviewer_jwt="$(shell gpg -d <dist/store/auth_sa_token)" \
+		kubernetes_host="$(shell gpg -d <dist/store/KUBE_SERVER)" \
+		kubernetes_ca_cert="$$(gpg -d <dist/store/cacrt)" # this has to process subs to account for newlines
 	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \
 		bound_service_account_namespaces="$(NAME)" \
@@ -242,22 +256,29 @@ vault/init: dist/VAULT_TOKEN \
 				secret/init \
 					checksum=$(shell cat dist/checksum)
 
-vault/unseal: dist/unseal_keys
+vault/unseal: dist/store/unseal_keys
 	: ## $@
-	xargs -n1 src/vault.sh $(NAME)-0 operator unseal <dist/env/unseal_keys
+	# unseal leader
+	gpg -d <dist/store/unseal_keys \
+		| xargs -n1 src/vault.sh $(NAME)-0 operator unseal
 
-	src/vault.sh $(NAME)-1 operator raft join \
-		http://$(NAME)-0.$(NAME)-internal:8200
-	xargs -n1 src/vault.sh $(NAME)-1 operator unseal <dist/env/unseal_keys
+	# signal join $vault-1 to leader and unseal
+	src/vault.sh $(NAME)-1 operator raft join http://$(NAME)-0.$(NAME)-internal:8200	
+	gpg -d <dist/store/unseal_keys \
+		| xargs -n1 src/vault.sh $(NAME)-1 operator unseal
 
+	# signal join $vault-2 to leader and unseal
 	src/vault.sh $(NAME)-2 operator raft join \
 		http://$(NAME)-0.$(NAME)-internal:8200
-	xargs -n1 src/vault.sh $(NAME)-2 operator unseal <dist/env/unseal_keys
+	gpg -d <dist/store/unseal_keys \
+		| xargs -n1 src/vault.sh $(NAME)-2 operator unseal 
 
-	src/vault.sh $(NAME)-0 status
-	src/vault.sh $(NAME)-1 status
-	src/vault.sh $(NAME)-2 status
-	kubectl get pods -n $(NAME)
+	# get status for each cluster node
+	seq 0 2 \
+		| xargs -I% -- src/vault.sh $(NAME)-% status \
+		| tee -a dist/artifacts/log
+	kubectl get pods -n $(NAME) \
+		| tee -a dist/artifacts/log
 
 vault/seal:
 	: ## $@

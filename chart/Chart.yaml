@@ -9,5 +9,6 @@ dependencies:
     version: 0.27.0
     alias: vault
   - name: external-secrets
+    alias: eso
     repository: https://charts.external-secrets.io
     version: 0.9.13

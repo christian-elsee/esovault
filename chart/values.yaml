@@ -1,7 +1,13 @@
 name: esovault
 
+eso:
+  serviceAccount:
+    name: eso
+
 vault:
   server:
+    serviceAccount:
+      name: vault
     ha:
       enabled: true
       raft:

@@ -8,15 +8,9 @@ commonLabels:
   app.kubernetes.io/version: "{{ .Values.checksum }}"
   app.kubernetes.io/instance: "{{ .Values.name }}-{{ .Values.checksum }}"
   app.kubernetes.io/part-of: "{{ .Values.name }}"  
-  app.kubernetes.io/managed-by: Helm  
 
-commonAnnotations:
-  "meta.helm.sh/release-name": "{{ .Values.name }}"
-    
 resources:
 - serviceaccount.auth-sa.yaml
 - secret.auth-sa-token.yaml
 - clusterrolebinding.role-tokenreview-binding.yaml
 - clustersecretsstore.vault.yaml
-- clusterexternalsecret.checksum.yaml
-- tests
