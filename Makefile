@@ -56,14 +56,6 @@ dist:
 		| xargs -0I% -- mkdir -p "$@/%"
 	cp -f chart/Chart.* chart/values.yaml $@/chart
 
-	# cp cached chart dependencies, from assets, if they exist, using
-	# chart.lock digest as a hash key
-	<chart/Chart.lock yq -re ".digest" \
-		| sed -En 's/sha256://p' \
-		| tee /dev/stderr \
-		| xargs -rI% -- cp -rf assets/charts.% $@/chart/charts \
-	||:
-
 	# cp helm bin from assets, using os and cpu arch as keys
 	tar -tf assets/helm-$(shell uname -s)-$(shell uname -m)-* \
 		| sed -n 1p \
@@ -95,7 +87,7 @@ dist/store/unseal_keys: dist/artifacts/vault
 		| xargs \
 		| gpg -aer $(NAME) 
 		| tee $@		
-dist/store/VAULT_TOKEN: artifacts/vault
+dist/store/VAULT_TOKEN: dist/artifacts/vault
 	: ## $@
 	gpg --verify $<.sign $<
 	gpg -d <$< \
@@ -124,6 +116,15 @@ dist/store/vault: dist/store/checksum
 			--detach-sig $@
 	# publish keys/sig tar pair to artifacts w/appended checksum
 	tar -cvf $@.tar.$(shell cat dist/store/checksum) $@ $@.sign -C artifacts 
+dist/store/digest: chart/Chart.lock
+	: ## $@
+	# cp cached chart dependencies, from assets, if they exist, using
+	# chart.lock digest as a hash key	
+	<chart/Chart.lock yq -re ".digest" \
+		| sed -En 's/sha256://p' \
+		| tee $@ \
+		| xargs -rI% -- cp -rf assets/charts.% dist/chart/charts \
+	||:
 
 dist/checksum:
 	: # $@
@@ -136,79 +137,85 @@ dist/checksum:
 		| cut -f1 -d" " \
 		| tee $@ >>dist/artifacts/log
 
-dist/chart/charts: dist/chart
+dist/chart/charts: dist/chart dist/store/digest
 	: ## $@
 	# build chart dependencies
-	helm dep build dist/chart \
+	helm dep update dist/chart \
 		--skip-refresh \
 		--debug \
 	| tee -a dist/artifacts/log
+	rsync -av --delete $@/ assets/charts.$(shell cat dist/store/digest)
 
-dist/artifacts/manifest.yaml: chart dist/chart artifacts/checksum
+dist/chart/templates/resources.yaml: chart/templates
 	: ## $@
-	# generate single file chart resource manifest as a sanity check of the build process
-	# publish chart manifests to artifacts
-	# use kustomize to generate chart resource manifests
-	find chart -mindepth 1 -type d -print0 \
-		| xargs -0I% -- sh -c 'kubectl kustomize % >dist/%/resources.yaml' _
+	# generate local chart templated resources manifest
+	kubectl kustomize chart/templates \
+		| tee $@ >>dist/artifacts/log
 
+dist/artifacts/manifest.yaml: dist/chart dist/checksum
+	: ## $@
+	# render chart templates manifest to artifacts
 	helm template $(NAME) dist/chart \
 		--dependency-update \
 		--render-subchart-notes \
 		--create-namespace \
 		--namespace "$(NAME)" \
 		--set "name=$(NAME)" \
-		--set "checksum=$(shell cat artifacts/checksum)" \
+		--set "checksum=$(shell cat dist/checksum)" \
 		--dry-run=client \
 	| tee $@ >>dist/artifacts/log
 
-dist/artifacts/crds.yaml: artifacts/manifest.yaml
+dist/chart/crds/resources.yaml: dist/artifacts/manifest.yaml
 	: ## $@
-	<$< yq \
-		--yaml-output \
-		-re 'select(.kind == "CustomResourceDefinition")' \
+	<$< yq --yaml-output \
+				'select(.kind == "CustomResourceDefinition")' \
 	| tee $@ >>dist/artifacts/log
 
 build: dist/checksum \
+			 dist/store/digest \
 			 dist/chart/charts \
+			 dist/chart/templates/resources.yaml \
 			 dist/artifacts/manifest.yaml \
-			 dist/artifacts/crds.yaml
+			 dist/chart/crds/resources.yaml
 build:
 	: # $@
 	cat dist/checksum
 
-check: dist/chart dist/artifacts/crds.yaml dist/checksum
+check: dist/chart dist/chart/crds/resources.yaml dist/checksum
 	: ## $@
 	# perform a client side dry run of helm install process as a santiy
 	# check of helm workflow against the generated chart resources
-	{ kubectl apply \
-			--dry-run=client \
-			-f dist/artifacts/crds.yaml
-		helm lint dist/chart \
-			--debug \
-			--with-subcharts \
-			--namespace "$(NAME)" \
-			--set "name=$(NAME)" \
-			--set "checksum=$(shell cat dist/checksum)" \
-	} | tee -a dist/artifacts/log
+	kubectl apply \
+		--dry-run=client \
+		-f dist/chart/crds/resources.yaml \
+	| tee dist/artifacts/log
+
+	helm lint dist/chart \
+		--debug \
+		--with-subcharts \
+		--namespace "$(NAME)" \
+		--set "name=$(NAME)" \
+		--set "checksum=$(shell cat dist/checksum)" \
+ 	| tee dist/artifacts/log
 
 
 ## install ######################################
-install/crds: artifacts/crds.yaml
+install/crds: dist/chart/crds/resources.yaml
 	: ## $@
 	kubectl apply -f $<
 
-install/chart: dist/chart artifacts/checksum
+install/chart: dist/chart dist/checksum
 	: ## $@
 	helm upgrade $(NAME) dist/chart \
 		--install \
 		--wait \
+		--skip-crds \
 		--dependency-update \
 		--render-subchart-notes \
 		--create-namespace \
 		--namespace "$(NAME)" \
 		--set "name=$(NAME)" \
-		--set "checksum=$(shell cat artifacts/checksum)" 
+		--set "checksum=$(shell cat dist/checksum)" 
 
 ## vault ########################################
 vault/init: dist/VAULT_TOKEN \
@@ -233,7 +240,7 @@ vault/init: dist/VAULT_TOKEN \
 	src/vault.sh $(NAME)-0 kv get secret/init \
 		|| src/vault.sh $(NAME)-0 kv put \
 				secret/init \
-					checksum=$(shell cat artifacts/checksum)
+					checksum=$(shell cat dist/checksum)
 
 vault/unseal: dist/unseal_keys
 	: ## $@
