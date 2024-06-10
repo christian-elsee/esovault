@@ -1,8 +1,8 @@
 apiVersion: v2
 type: application
 name: esovault
-version: 0.1.0 # unused
-appVersion: 0.1.0 # unused
+version: 0.1.0 
+appVersion: 0.1.0 
 dependencies:
   - name: vault
     repository: https://helm.releases.hashicorp.com

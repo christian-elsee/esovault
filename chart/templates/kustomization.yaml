@@ -5,9 +5,11 @@ metadata:
   name: templates
 commonLabels:
   app.kubernetes.io/name: "{{ .Values.name }}"
+  helm.sh/chart: "{{ .Chart.Name }}-{{ .Values.checksum }}" 
+  app.kubernetes.io/managed-by: "{{ .Release.Service }}"
+  app.kubernetes.io/instance: "{{ .Release.Name }}"
   app.kubernetes.io/version: "{{ .Values.checksum }}"
-  app.kubernetes.io/instance: "{{ .Values.name }}-{{ .Values.checksum }}"
-  app.kubernetes.io/part-of: "{{ .Values.name }}"  
+  app.kubernetes.io/component: secrets
 
 resources:
 - serviceaccount.auth-sa.yaml

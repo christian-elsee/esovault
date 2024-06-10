@@ -2,6 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 metadata:
   name: tests
+  namespace: "{{ .Values.name }}"
 sortOptions:
   order: fifo
 commonAnnotations:
@@ -9,13 +10,14 @@ commonAnnotations:
   "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 
 commonLabels:
-  app.kubernetes.io/name: "{{ .Values.name }}-test"
+  app.kubernetes.io/name: "{{ .Values.name }}"
+  helm.sh/chart: "{{ .Chart.Name }}-{{ .Values.checksum }}" 
+  app.kubernetes.io/managed-by: "{{ .Release.Service }}"
+  app.kubernetes.io/instance: "{{ .Release.Name }}"
   app.kubernetes.io/version: "{{ .Values.checksum }}"
-  app.kubernetes.io/instance: "{{ .Values.name }}-{{ .Values.checksum }}"
-  app.kubernetes.io/part-of: "{{ .Values.name }}"
+  app.kubernetes.io/component: secrets
 
 resources:
-- namespace.esovault-test.yaml
+- externalsecret.checksum.yaml
 - pod.test-env-from-secret.yaml
-- clusterexternalsecret.checksum.yaml
 

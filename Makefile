@@ -17,11 +17,21 @@ export PATH := dist/bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
 
 ## interface ####################################
-all: distclean dist build check
-install: install/crds install/chart vault/bootstrap 
-clean:
-test:
+all: distclean dist build check 
+install: install/crds \
+				 install/chart \
+				 vault/bootstrap \
+				 dist/artifacts/manifest.gpg \
+				 dist/artifacts/values.gpg
+test: distclean \
+		  dist \
+		  build \
+		  dist/chart/templates/tests/resources.yaml \
+		  check \
+			install/crds \
+			install/chart 
 status:
+clean:
 vault/unseal:
 vault/seal:
 
@@ -158,7 +168,13 @@ dist/chart/charts: dist/chart dist/store/digest
 dist/chart/templates/resources.yaml: chart/templates
 	: ## $@
 	# generate local chart templated resources manifest
-	kubectl kustomize chart/templates \
+	kubectl kustomize $< \
+		| tee $@ >>dist/artifacts/log
+
+dist/chart/templates/tests/resources.yaml: chart/templates/tests
+	: ## $@
+	# generate local chart templated resources manifest
+	kubectl kustomize $< \
 		| tee $@ >>dist/artifacts/log
 
 dist/artifacts/manifest.yaml: dist/chart dist/checksum
@@ -179,6 +195,19 @@ dist/chart/crds/resources.yaml: dist/artifacts/manifest.yaml
 	<$< yq --yaml-output \
 				'select(.kind == "CustomResourceDefinition")' \
 	| tee $@ >>dist/artifacts/log
+
+dist/artifacts/manifest.gpg: 
+	: ## $@
+	# render installed resources to encrypted file to use as a debug and cleanup resource
+	helm get manifest $(NAME) -n $(NAME) \
+		| gpg -aer $(NAME) \
+	>>$@ 
+dist/artifacts/values.gpg: 
+	: ## $@
+	# render installed resources to encrypted file to use as a debug and cleanup resource
+	helm get values $(NAME) -n $(NAME) \
+		| gpg -aer $(NAME) \
+	>>$@ 
 
 build: dist/checksum \
 			 dist/store/digest \
@@ -209,6 +238,9 @@ check: dist/chart dist/chart/crds/resources.yaml dist/checksum
 
 
 ## install ######################################
+install:
+	: ## @
+
 install/crds: dist/chart/crds/resources.yaml
 	: ## $@
 	kubectl apply -f $< --server-side
@@ -285,12 +317,10 @@ vault/seal:
 	src/vault.sh $(NAME)-0 operator seal
 
 ## test #########################################
-test: distclean dist build
+test:
 	: ## $@
-	rsync -avh --delete t/ dist/t/
-
-	# cd dist && prove -vr
-	helm test $(NAME) -n $(NAME)
+	helm test $(NAME) -n $(NAME) --logs \
+		| tee -a dist/artifacts/logs
 
 ## status #######################################
 status:
