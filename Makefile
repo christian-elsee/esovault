@@ -317,7 +317,7 @@ vault/seal:
 ## test #########################################
 test:
 	: ## $@
-	helm test $(NAME) -n $(NAME) --logs --debug \
+	helm test $(NAME) -n $(NAME) --debug \
 		| tee -a dist/artifacts/logs
 
 testclean: 
