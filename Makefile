@@ -23,10 +23,8 @@ install: install/crds \
 				 vault/bootstrap \
 				 dist/artifacts/manifest.gpg \
 				 dist/artifacts/values.gpg
-test: distclean \
-		  dist \
-		  build \
-		  dist/chart/templates/tests/resources.yaml \
+test: testclean \
+	    dist/chart/templates/tests/resources.yaml \
 		  check \
 			install/crds \
 			install/chart 
@@ -319,8 +317,21 @@ vault/seal:
 ## test #########################################
 test:
 	: ## $@
-	helm test $(NAME) -n $(NAME) --logs \
+	helm test $(NAME) -n $(NAME) --logs --debug \
 		| tee -a dist/artifacts/logs
+
+testclean: 
+	: ## $@
+	# Remove test artifacts to ensure baseline state, tabula rasa, etc
+	helm template dist/chart \
+		--show-only templates/tests/resources.yaml \
+		--set "name=$(NAME)" \
+		--set "checksum=$(shell cat dist/checksum)" \
+	| kubectl delete \
+			-f- \
+			--ignore-not-found=true \
+	||:
+	rm -f dist/chart/templates/tests/resources.yaml
 
 ## status #######################################
 status:
