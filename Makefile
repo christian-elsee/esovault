@@ -24,6 +24,7 @@ install: install/crds \
 				 dist/artifacts/manifest.gpg \
 				 dist/artifacts/values.gpg
 test: testclean \
+			test/volumes \
 	    dist/chart/templates/tests/resources.yaml \
 		  check \
 			install/crds \
@@ -60,10 +61,10 @@ dist:
 					 $@/store \
 					 $@/artifacts
 
-	# cp needed artifacts to build chart dist
-	cp -rf policy $@/
+	# cp needed artifacts to build/test chart dist
+	cp -rf src t policy $@/
 
-	# cp chart directory structure, dependency files, values files and any
+	# cp chart directory structure, dependency and values files
 	# existing artifacts
 	find chart -type d -print0 \
 		| tac -s "" \
@@ -79,6 +80,25 @@ dist:
 					-C dist/bin \
 					--strip-components=1 \
 					%/helm
+
+	# cp latest tests/harness from assets
+	find assets -maxdepth 1 \
+						  -type d \
+						  -name 'tapview*' \
+						  -printf "%T+ %p\n" \
+		| sort -r \
+		| head -n1 \
+		| cut -f2 -d" "\
+		| xargs -rt -- cp -rf -t $@/
+
+	find assets -maxdepth 1 \
+						  -type d \
+						  -name 'tap*' \
+						  -printf "%T+ %p\n" \
+		| sort -r \
+		| head -n1 \
+		| cut -f2 -d" "\
+		| xargs -rt -- cp -rf -t $@/
 
 dist/store/cacrt:
 	: ## $@
@@ -222,6 +242,11 @@ check: dist/chart dist/chart/crds/resources.yaml dist/checksum
 	# perform a client side dry run of helm install process as a santiy
 	# check of helm workflow against the generated chart resources
 	kubectl apply \
+		--dry-run=server \
+		-f dist/chart/crds/resources.yaml \
+	| tee -a dist/artifacts/log
+
+	kubectl apply \
 		--dry-run=client \
 		-f dist/chart/crds/resources.yaml \
 	| tee -a dist/artifacts/log
@@ -319,6 +344,10 @@ test:
 	: ## $@
 	helm test $(NAME) -n $(NAME) --debug \
 		| tee -a dist/artifacts/logs
+
+test/volumes:
+	: ## $@
+	# create configmap volumes needed to mount tap tests and runner
 
 testclean: 
 	: ## $@
