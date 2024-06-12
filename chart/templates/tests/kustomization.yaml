@@ -15,6 +15,14 @@ commonLabels:
   app.kubernetes.io/component: tests
 
 resources:
-- externalsecret.checksum.yaml
-- pod.test-env-from-secret.yaml
+  - externalsecret.checksum.yaml
+  - pod.test-env-from-secret.yaml
 
+configMapGenerator:
+  - name: tests
+    files:
+    - dist/t/*.t
+
+  - name: harness
+    files:
+    - dist/*.t

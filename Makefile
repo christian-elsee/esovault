@@ -62,7 +62,7 @@ dist:
 					 $@/artifacts
 
 	# cp needed artifacts to build/test chart dist
-	cp -rf src t policy $@/
+	cp -rf policy $@/
 
 	# cp chart directory structure, dependency and values files
 	# existing artifacts
@@ -82,23 +82,7 @@ dist:
 					%/helm
 
 	# cp latest tests/harness from assets
-	find assets -maxdepth 1 \
-						  -type d \
-						  -name 'tapview*' \
-						  -printf "%T+ %p\n" \
-		| sort -r \
-		| head -n1 \
-		| cut -f2 -d" "\
-		| xargs -rt -- cp -rf -t $@/
-
-	find assets -maxdepth 1 \
-						  -type d \
-						  -name 'tap*' \
-						  -printf "%T+ %p\n" \
-		| sort -r \
-		| head -n1 \
-		| cut -f2 -d" "\
-		| xargs -rt -- cp -rf -t $@/
+	cp -rf assets/tap* $@/tap
 
 dist/store/cacrt:
 	: ## $@
