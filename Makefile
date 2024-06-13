@@ -13,6 +13,7 @@
 
 ## env ##########################################
 export NAME := $(shell basename $(PWD))
+export NS := $(NAME)
 export PATH := dist/bin:$(PATH)
 export KUBECONFIG ?= $(HOME)/.kube/config
 
