@@ -1,6 +1,6 @@
-# esovault
+# secrets-stack
 
-Kubernetes orchestration workflow for external secrets operator and hosted hashicorp vault. Orchestration is encapsulated within a standard `make` workflow. All workflow targets are idempotent.
+Kubernetes orchestration workflow for external secrets operator and hosted hashicorp vault. Orchestration is encapsulated within a standard `make` workflow. All workflow targets ~~are~~ should be idempotent.
 
 ## dependencies
 
@@ -80,8 +80,7 @@ helm upgrade vault hashicorp/vault \
 ...
 ```
 
-Esovault chart dependencies are installed alongside esovault, in the same namespace
-
+Stack components are defined as dependencies in `Chart.yaml`
 ```sh
 $ cat Chart.yaml | sed -n '/dependencies/,$p'
 dependencies:
@@ -94,7 +93,7 @@ dependencies:
     version: 0.9.13
 ```
 ```sh
-$ helm dependency list dist/chart -n esovault
+$ helm dependency list dist/chart -n secrets-stack
 NAME              VERSION REPOSITORY                          STATUS
 vault             0.27.0  https://helm.releases.hashicorp.com ok
 external-secrets  0.9.13  https://charts.external-secrets.io  ok
