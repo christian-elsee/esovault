@@ -16,13 +16,4 @@ commonLabels:
 
 resources:
   - externalsecret.checksum.yaml
-  - pod.test-env-from-secret.yaml
-
-configMapGenerator:
-  - name: tests
-    files:
-    - dist/t/*.t
-
-  - name: harness
-    files:
-    - dist/*.t
+  - pod.test-secret-checksum.yaml

@@ -65,7 +65,7 @@ dist:
 	cp -rf policy $@/
 
 	# cp chart directory structure, dependency and values files
-	# existing artifacts
+	# to dist/chart
 	find chart -type d -print0 \
 		| tac -s "" \
 		| xargs -0I% -- mkdir -p "$@/%"
@@ -80,9 +80,6 @@ dist:
 					-C dist/bin \
 					--strip-components=1 \
 					%/helm
-
-	# cp latest tests/harness from assets
-	cp -rf assets/tap* $@/tap
 
 dist/store/cacrt:
 	: ## $@
