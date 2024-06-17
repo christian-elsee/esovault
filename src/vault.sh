@@ -16,4 +16,4 @@ logger -sp DEBUG -- "Enter" \
   :: "namespace=$NS" \
   :: "$( echo $@ | base64 | tr -d \\n )" 2>&3
 
-kubectl -n $NS exec -i "$pod" -- vault "$@"
+kubectl -n "$NS" exec -i "$pod" -- vault "$@"

@@ -71,6 +71,7 @@ dist:
 		| tac -s "" \
 		| xargs -0I% -- mkdir -p "$@/%"
 	cp -f chart/Chart.* chart/values.yaml $@/chart
+	cp -f chart/templates/required.yaml $@/chart/templates
 
 	# cp helm bin from assets, using os and cpu arch as keys
 	tar -tf assets/helm-$(shell uname -s)-$(shell uname -m)-* \
@@ -120,7 +121,7 @@ dist/store/auth_sa_token:
 dist/artifacts/vault-bootstrap.gpg: dist/checksum
 	: ## $@
 	# init vault leader, encrypt keys and write to disk
-	src/vault.sh $(NAME)-0 operator init \
+	src/vault.sh $(NAME)-vault-0 operator init \
     -key-shares=1 \
     -key-threshold=1 \
     -format=json \
@@ -275,21 +276,21 @@ vault/bootstrap:	dist/artifacts/vault-bootstrap.gpg \
 									dist/store/auth_sa_token \
 									vault/unseal
 	: ## $@
-	src/vault.sh $(NAME)-0 login "$(shell gpg -d <dist/store/VAULT_TOKEN)"
-	src/vault.sh $(NAME)-0 secrets enable -path=secret -version=1 kv ||:
-	src/vault.sh $(NAME)-0 policy write read_only -<dist/policy/read_only.json
-	src/vault.sh $(NAME)-0 auth enable -path=kubernetes/internal kubernetes ||:
-	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/config \
+	src/vault.sh $(NAME)-vault-0 login "$(shell gpg -d <dist/store/VAULT_TOKEN)"
+	src/vault.sh $(NAME)-vault-0 secrets enable -path=secret -version=1 kv ||:
+	src/vault.sh $(NAME)-vault-0 policy write read_only -<dist/policy/read_only.json
+	src/vault.sh $(NAME)-vault-0 auth enable -path=kubernetes/internal kubernetes ||:
+	src/vault.sh $(NAME)-vault-0 write auth/kubernetes/internal/config \
 		token_reviewer_jwt="$(shell gpg -d <dist/store/auth_sa_token)" \
 		kubernetes_host="$(shell gpg -d <dist/store/KUBE_SERVER)" \
 		kubernetes_ca_cert="$$(gpg -d <dist/store/cacrt)" # this has to process subs to account for newlines
-	src/vault.sh $(NAME)-0 write auth/kubernetes/internal/role/eso-creds-reader \
+	src/vault.sh $(NAME)-vault-0 write auth/kubernetes/internal/role/eso-creds-reader \
 		bound_service_account_names="auth-sa" \
 		bound_service_account_namespaces="$(NAME)" \
 		policies="read_only" \
 		ttl="15m"
-	src/vault.sh $(NAME)-0 kv get secret/init \
-		|| src/vault.sh $(NAME)-0 kv put \
+	src/vault.sh $(NAME)-vault-0 kv get secret/init \
+		|| src/vault.sh $(NAME)-vault-0 kv put \
 				secret/init \
 					checksum=$(shell cat dist/checksum)
 
@@ -297,29 +298,29 @@ vault/unseal: dist/store/unseal_keys
 	: ## $@
 	# unseal leader
 	gpg -d <dist/store/unseal_keys \
-		| xargs -n1 src/vault.sh $(NAME)-0 operator unseal
+		| xargs -n1 src/vault.sh $(NAME)-vault-0 operator unseal
 
 	# signal join $vault-1 to leader and unseal
-	src/vault.sh $(NAME)-1 operator raft join http://$(NAME)-0.$(NAME)-internal:8200	
+	src/vault.sh $(NAME)-vault-1 operator raft join http://$(NAME)-vault-internal:8200
 	gpg -d <dist/store/unseal_keys \
-		| xargs -n1 src/vault.sh $(NAME)-1 operator unseal
+		| xargs -n1 src/vault.sh $(NAME)-vault-1 operator unseal
 
 	# signal join $vault-2 to leader and unseal
-	src/vault.sh $(NAME)-2 operator raft join \
-		http://$(NAME)-0.$(NAME)-internal:8200
+	src/vault.sh $(NAME)-vault-2 operator raft join \
+		http://$(NAME)-vault-0.$(NAME)-vault-internal:8200
 	gpg -d <dist/store/unseal_keys \
-		| xargs -n1 src/vault.sh $(NAME)-2 operator unseal 
+		| xargs -n1 src/vault.sh $(NAME)-vault-2 operator unseal
 
 	# get status for each cluster node
 	seq 0 2 \
-		| xargs -I% -- src/vault.sh $(NAME)-% status \
+		| xargs -I% -- src/vault.sh $(NAME)-vault-% status \
 		| tee -a dist/artifacts/log
 	kubectl get pods -n $(NAME) \
 		| tee -a dist/artifacts/log
 
 vault/seal:
 	: ## $@
-	src/vault.sh $(NAME)-0 operator seal
+	src/vault.sh $(NAME)-vault-0 operator seal
 
 ## test #########################################
 test:

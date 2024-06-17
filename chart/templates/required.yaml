@@ -1,0 +1,2 @@
+{{- $_ := required "name required" .Values.name }}
+{{- $_ := required "checksum required" .Values.checksum }}
